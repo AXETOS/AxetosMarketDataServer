@@ -94,6 +94,26 @@ CREATE TABLE IF NOT EXISTS cleanup_runs (
  created_utc TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_cleanup_runs_created ON cleanup_runs(created_utc);
+
+CREATE TABLE IF NOT EXISTS mt5_bridge_heartbeats (
+ provider_key TEXT NOT NULL, terminal_instance_id TEXT NOT NULL, broker_name TEXT NULL,
+ server_name TEXT NULL, account_login INTEGER NULL, source_time_utc TEXT NOT NULL,
+ received_utc TEXT NOT NULL, PRIMARY KEY(provider_key, terminal_instance_id)
+);
+CREATE TABLE IF NOT EXISTS mt5_bridge_instruments (
+ provider_key TEXT NOT NULL, terminal_instance_id TEXT NOT NULL, provider_symbol TEXT NOT NULL,
+ canonical_instrument TEXT NOT NULL, digits INTEGER NOT NULL, point TEXT NOT NULL,
+ is_visible INTEGER NOT NULL, display_name TEXT NULL, description TEXT NULL, path TEXT NULL,
+ asset_class TEXT NULL, is_selected INTEGER NOT NULL, observed_utc TEXT NOT NULL,
+ PRIMARY KEY(provider_key, terminal_instance_id, provider_symbol)
+);
+CREATE INDEX IF NOT EXISTS ix_bridge_instruments_canonical ON mt5_bridge_instruments(canonical_instrument);
+CREATE TABLE IF NOT EXISTS mt5_bridge_quotes (
+ provider_key TEXT NOT NULL, terminal_instance_id TEXT NOT NULL, provider_symbol TEXT NOT NULL,
+ canonical_instrument TEXT NOT NULL, source_time_utc TEXT NOT NULL, received_utc TEXT NOT NULL,
+ bid TEXT NOT NULL, ask TEXT NOT NULL, last TEXT NULL, volume TEXT NULL,
+ PRIMARY KEY(provider_key, terminal_instance_id, provider_symbol)
+);
 """
 
 
@@ -456,3 +476,37 @@ class MarketDataStore:
                 "SELECT * FROM cleanup_runs ORDER BY created_utc DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def upsert_bridge_heartbeat(self, value: dict[str, object]) -> None:
+        now=datetime.now().astimezone()
+        with self.connect() as c:
+            c.execute("""INSERT INTO mt5_bridge_heartbeats VALUES(?,?,?,?,?,?,?) ON CONFLICT(provider_key,terminal_instance_id) DO UPDATE SET broker_name=excluded.broker_name,server_name=excluded.server_name,account_login=excluded.account_login,source_time_utc=excluded.source_time_utc,received_utc=excluded.received_utc""", (value['provider_key'],value['terminal_instance_id'],value.get('broker_name'),value.get('server_name'),value.get('account_login'),_iso(value['time_utc']),_iso(now)))
+
+    def upsert_bridge_instruments(self, provider: str, terminal: str, observed: datetime, rows: list[dict[str, object]]) -> None:
+        with self.connect() as c:
+            c.executemany("""INSERT INTO mt5_bridge_instruments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider_key,terminal_instance_id,provider_symbol) DO UPDATE SET canonical_instrument=excluded.canonical_instrument,digits=excluded.digits,point=excluded.point,is_visible=excluded.is_visible,display_name=excluded.display_name,description=excluded.description,path=excluded.path,asset_class=excluded.asset_class,is_selected=excluded.is_selected,observed_utc=excluded.observed_utc""", [(provider,terminal,r['provider_symbol'],r['canonical_instrument'],r['digits'],str(r['point']),int(r['is_visible']),r.get('display_name'),r.get('description'),r.get('path'),r.get('asset_class'),int(r.get('is_selected',False)),_iso(observed)) for r in rows])
+
+    def list_bridge_instruments(self, provider: str | None=None, terminal: str | None=None) -> list[dict[str, object]]:
+        q='SELECT * FROM mt5_bridge_instruments WHERE 1=1'; args=[]
+        if provider: q+=' AND provider_key=?'; args.append(provider)
+        if terminal: q+=' AND terminal_instance_id=?'; args.append(terminal)
+        q+=' ORDER BY provider_key, canonical_instrument, provider_symbol'
+        with self.connect() as c: rows=c.execute(q,args).fetchall()
+        return [dict(x) for x in rows]
+
+    def set_bridge_instrument_selection(self, provider: str, terminal: str, symbol: str, enabled: bool) -> bool:
+        with self.connect() as c:
+            cur=c.execute('UPDATE mt5_bridge_instruments SET is_selected=? WHERE provider_key=? AND terminal_instance_id=? AND provider_symbol=?',(int(enabled),provider,terminal,symbol))
+            return cur.rowcount>0
+
+    def upsert_bridge_quote(self, provider: str, terminal: str, value: dict[str, object], received: datetime) -> None:
+        with self.connect() as c:
+            c.execute("""INSERT INTO mt5_bridge_quotes VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider_key,terminal_instance_id,provider_symbol) DO UPDATE SET canonical_instrument=excluded.canonical_instrument,source_time_utc=excluded.source_time_utc,received_utc=excluded.received_utc,bid=excluded.bid,ask=excluded.ask,last=excluded.last,volume=excluded.volume""",(provider,terminal,value['provider_symbol'],value['canonical_instrument'],_iso(value['time_utc']),_iso(received),str(value['bid']),str(value['ask']),None if value.get('last') is None else str(value['last']),None if value.get('volume') is None else str(value['volume'])))
+
+    def bridge_status(self) -> dict[str, object]:
+        with self.connect() as c:
+            heart=[dict(x) for x in c.execute('SELECT * FROM mt5_bridge_heartbeats ORDER BY received_utc DESC').fetchall()]
+            instruments=c.execute('SELECT COUNT(*) FROM mt5_bridge_instruments').fetchone()[0]
+            selected=c.execute('SELECT COUNT(*) FROM mt5_bridge_instruments WHERE is_selected=1').fetchone()[0]
+            quotes=c.execute('SELECT COUNT(*) FROM mt5_bridge_quotes').fetchone()[0]
+        return {'heartbeats':heart,'discovered_instruments':instruments,'selected_instruments':selected,'live_quotes':quotes}

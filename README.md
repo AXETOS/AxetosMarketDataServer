@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.8.0
+## Version 0.9.0
 
-Version 0.8.0 adds database lifecycle management for long-running collectors. Operators can preview and apply retention policies, remove old raw ticks and operational audit rows without deleting candles, run SQLite integrity checks, checkpoint the WAL, optionally compact the database, and inspect cleanup history.
+Version 0.9.0 adds compatibility with the original Axetos MT5 bridge contract, including terminal heartbeats, instrument discovery, live quote snapshots, queued tick batches, source-candle ingestion, instrument selection, and bridge diagnostics.
 
 ## Operational diagnostics
 
@@ -49,6 +49,23 @@ GET /metrics
 - Database integrity checks and retention previews
 - Safe cleanup of old raw ticks and operational history
 - WAL checkpointing, optional SQLite compaction, and cleanup audit history
+
+## MT5 bridge compatibility
+
+Version 0.9.0 implements the original Axetos MT5 bridge ingestion contract: heartbeat, instrument discovery, live quote snapshots, queued tick batches, source candles, and instrument selection. Tick batches are accepted quickly with HTTP 202 and processed by a bounded background queue so the bridge is not blocked by SQLite and candle construction work.
+
+Compatible endpoints:
+
+```text
+POST /api/market-data/ingest/mt5/heartbeat
+POST /api/market-data/ingest/mt5/instruments
+POST /api/market-data/ingest/mt5/quotes
+POST /api/market-data/ingest/mt5/ticks
+POST /api/market-data/ingest/mt5/candles
+GET  /api/market-data/mt5/discovered-instruments
+POST /api/market-data/mt5/instrument-selection
+GET  /api/market-data/mt5/bridge/status
+```
 
 ## Architecture
 

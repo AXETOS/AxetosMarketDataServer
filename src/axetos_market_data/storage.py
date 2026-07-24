@@ -62,6 +62,22 @@ CREATE TABLE IF NOT EXISTS data_gaps (
  UNIQUE(provider, instrument, timeframe, gap_from_utc)
 );
 CREATE INDEX IF NOT EXISTS ix_gaps_lookup ON data_gaps(resolved, provider, instrument, timeframe);
+
+CREATE TABLE IF NOT EXISTS repair_runs (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ provider TEXT NOT NULL,
+ instrument TEXT NULL,
+ timeframe TEXT NULL,
+ gaps_selected INTEGER NOT NULL,
+ windows_requested INTEGER NOT NULL,
+ candles_received INTEGER NOT NULL,
+ candles_written INTEGER NOT NULL,
+ invalid_candles INTEGER NOT NULL,
+ gaps_resolved INTEGER NOT NULL,
+ gaps_remaining INTEGER NOT NULL,
+ created_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_repair_runs_provider ON repair_runs(provider, created_utc);
 """
 
 
@@ -176,9 +192,78 @@ class MarketDataStore:
         with self.connect() as connection:
             connection.execute("INSERT OR IGNORE INTO data_gaps(provider,instrument,timeframe,gap_from_utc,gap_to_utc,detected_utc,resolved) VALUES(?,?,?,?,?,?,0)", (provider,instrument,timeframe,_iso(start),_iso(end),_iso(datetime.now().astimezone())))
 
-    def list_gaps(self, limit: int = 500) -> list[dict[str, object]]:
+    def list_gaps(
+        self,
+        limit: int = 500,
+        provider: str | None = None,
+        instrument: str | None = None,
+        timeframe: str | None = None,
+    ) -> list[dict[str, object]]:
+        where = ["resolved=0"]
+        parameters: list[object] = []
+        for column, value in (("provider", provider), ("instrument", instrument), ("timeframe", timeframe)):
+            if value is not None:
+                where.append(f"{column}=?")
+                parameters.append(value)
+        parameters.append(limit)
         with self.connect() as connection:
-            rows=connection.execute("SELECT * FROM data_gaps WHERE resolved=0 ORDER BY gap_from_utc DESC LIMIT ?", (limit,)).fetchall()
+            rows = connection.execute(
+                f"SELECT * FROM data_gaps WHERE {' AND '.join(where)} ORDER BY gap_from_utc LIMIT ?",
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_gaps(
+        self,
+        provider: str | None = None,
+        instrument: str | None = None,
+        timeframe: str | None = None,
+    ) -> int:
+        where = ["resolved=0"]
+        parameters: list[object] = []
+        for column, value in (("provider", provider), ("instrument", instrument), ("timeframe", timeframe)):
+            if value is not None:
+                where.append(f"{column}=?")
+                parameters.append(value)
+        with self.connect() as connection:
+            return int(connection.execute(
+                f"SELECT COUNT(*) FROM data_gaps WHERE {' AND '.join(where)}", parameters
+            ).fetchone()[0])
+
+    def mark_gap_resolved(self, gap_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute("UPDATE data_gaps SET resolved=1 WHERE id=?", (gap_id,))
+
+    def candle_exists(self, provider: str, instrument: str, timeframe: str, open_time: datetime) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM candles WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc=? LIMIT 1",
+                (provider, instrument, timeframe, _iso(open_time)),
+            ).fetchone()
+        return row is not None
+
+    def record_repair_run(self, result: object) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO repair_runs(
+                    provider,instrument,timeframe,gaps_selected,windows_requested,
+                    candles_received,candles_written,invalid_candles,gaps_resolved,
+                    gaps_remaining,created_utc
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    getattr(result, "provider"), getattr(result, "instrument"), getattr(result, "timeframe"),
+                    getattr(result, "gaps_selected"), getattr(result, "windows_requested"),
+                    getattr(result, "candles_received"), getattr(result, "candles_written"),
+                    getattr(result, "invalid_candles"), getattr(result, "gaps_resolved"),
+                    getattr(result, "gaps_remaining"), _iso(datetime.now().astimezone()),
+                ),
+            )
+
+    def list_repair_runs(self, limit: int = 100) -> list[dict[str, object]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM repair_runs ORDER BY created_utc DESC LIMIT ?", (limit,)
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def read_candles(

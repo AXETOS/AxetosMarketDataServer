@@ -1,8 +1,12 @@
 # Axetos Market Data Server
 
-A standalone Python market-data server for collecting financial market ticks, building OHLC candles, aggregating timeframes, and storing market data in SQLite.
+A standalone Python market-data server for collecting financial market ticks, building OHLC candles, aggregating timeframes, validating historical data, and storing the result in SQLite.
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
+
+## Version 0.4.0
+
+Version 0.4.0 adds a complete candle-gap repair cycle. Unresolved gaps can be filtered by provider, instrument, and timeframe, grouped into contiguous request windows, fetched again from MetaTrader 5, validated, persisted, marked resolved only when the expected candle exists, and recorded in a repair audit history.
 
 ## Current capabilities
 
@@ -12,12 +16,18 @@ This repository contains **market-data infrastructure only**. It does not place,
 - Raw tick persistence with duplicate protection
 - Deterministic UTC one-minute OHLC candle construction
 - Higher-timeframe candle aggregation
+- Historical MT5 candle backfill
+- Persistent backfill status and failure details
+- Weekday candle-gap detection
+- Targeted gap rescanning
+- Automatic repair of unresolved MT5 gaps
+- Contiguous gap grouping to reduce provider requests
+- Repair-run audit history
 - SQLite storage with WAL mode and indexed lookup paths
 - Provider configuration persisted in JSON
-- Provider start, stop, restart, enable, disable, edit, and removal operations
-- Browser-based provider control center and database statistics
-- REST endpoints and automatically generated OpenAPI documentation
-- Graceful shutdown with active candles persisted as incomplete
+- Browser-based provider control center
+- REST endpoints and OpenAPI documentation
+- Graceful shutdown with active candles stored as incomplete
 - Automated tests through GitHub Actions
 
 ## Architecture
@@ -41,6 +51,11 @@ Higher-timeframe aggregation
         |
         v
 SQLite candle store
+
+Historical provider data
+        |
+        v
+Backfill -> validation -> gap detection -> repair -> audit history
 ```
 
 The server is intentionally separated from any trading platform. A trading platform may read the database or consume the REST endpoints, but order execution remains outside this project.
@@ -48,7 +63,7 @@ The server is intentionally separated from any trading platform. A trading platf
 ## Requirements
 
 - Python 3.11 or newer
-- MetaTrader 5 terminal and the `MetaTrader5` Python package only when using the MT5 provider
+- MetaTrader 5 terminal and the `MetaTrader5` Python package only when using an MT5 provider
 
 ## Installation
 
@@ -92,16 +107,7 @@ data/providers.json
 
 ## Provider control center
 
-The web UI shows:
-
-- stored tick and candle totals;
-- instrument count and latest tick time;
-- configured provider state;
-- provider type and symbols;
-- received tick count and last tick;
-- start, stop, restart, edit, enable/disable, and remove operations.
-
-A mock provider can be configured directly from the UI. For an MT5 provider, select **MetaTrader 5**, enter one or more terminal symbols, and optionally provide the path to `terminal64.exe`.
+The web UI shows database statistics and the live state of each configured provider. Providers can be added, edited, started, stopped, restarted, or removed. MT5 providers expose controls for seven-day backfill and unresolved-gap repair.
 
 ## REST endpoints
 
@@ -113,7 +119,13 @@ A mock provider can be configured directly from the UI. For an MT5 provider, sel
 | `PUT` | `/api/providers/{provider_key}` | Add or update a provider |
 | `POST` | `/api/providers/{provider_key}/{action}` | Start, stop, restart, enable, or disable |
 | `DELETE` | `/api/providers/{provider_key}` | Remove a provider; historical data remains |
-| `GET` | `/api/instruments` | Instruments currently stored |
+| `POST` | `/api/backfill` | Import MT5 historical candles and detect gaps |
+| `GET` | `/api/backfill/state` | Inspect persisted backfill results and failures |
+| `GET` | `/api/gaps` | Query unresolved gaps with optional filters |
+| `POST` | `/api/gaps/scan` | Rescan a provider/instrument/timeframe window |
+| `POST` | `/api/gaps/repair` | Repair unresolved gaps from MT5 history |
+| `GET` | `/api/gaps/repairs` | Inspect repair-run audit history |
+| `GET` | `/api/instruments` | List instruments currently stored |
 | `GET` | `/api/candles` | Query stored candles |
 
 Example candle query:
@@ -122,9 +134,9 @@ Example candle query:
 /api/candles?instrument=EUR%2FUSD&timeframe=1m&limit=200
 ```
 
-## Existing command-line collector
+## Command-line collector
 
-The original command-line workflow remains available:
+The command-line workflow remains available:
 
 ```powershell
 axetos-market-data mock --instrument EUR/USD --interval 1
@@ -144,25 +156,17 @@ axetos-market-data aggregate --provider ICMarkets.MT5 --instrument EUR/USD --tim
 pytest -q
 ```
 
-The test suite currently covers candle creation, storage, provider configuration, and the web API. GitHub Actions runs the suite on every push and pull request.
+The test suite covers candle creation, storage, provider configuration, historical backfill, gap repair, and the web API. GitHub Actions runs it on every push and pull request.
 
-## Project status
+## Roadmap
 
-Version `0.3.0` is an early but runnable Python conversion of the provider supervision, collection, persistence, and management concepts from the original Axetos market-data server. Historical MT5 backfill and gap analysis are now implemented. Planned conversion work includes automated gap repair, richer symbol mapping, provider priority/fallback, operational log export, and more extensive data-quality diagnostics.
+- Explicit provider priority and fallback policy
+- Richer symbol alias mapping
+- Automated scheduled backfill and repair jobs
+- Market-session calendars and holiday awareness
+- Data-quality diagnostics and operational log export
+- PostgreSQL storage option
 
 ## License
 
 MIT License. See [LICENSE](LICENSE).
-
-## Version 0.3.0 historical data pipeline
-
-Version 0.3.0 adds resumable MT5 historical candle backfill, persistent ingestion status,
-OHLC validation, duplicate-safe upserts, and weekday gap detection. The control center can
-start a seven-day one-minute backfill for an MT5 provider, while the REST API supports custom
-symbols, instruments, timeframes, and history ranges.
-
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `POST` | `/api/backfill` | Import MT5 historical candles and run validation/gap analysis |
-| `GET` | `/api/backfill/state` | Inspect persisted backfill results and failures |
-| `GET` | `/api/gaps` | Inspect unresolved weekday candle gaps |

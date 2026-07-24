@@ -95,6 +95,39 @@ CREATE TABLE IF NOT EXISTS cleanup_runs (
 );
 CREATE INDEX IF NOT EXISTS ix_cleanup_runs_created ON cleanup_runs(created_utc);
 
+CREATE TABLE IF NOT EXISTS maintenance_schedules (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ name TEXT NOT NULL UNIQUE,
+ task_type TEXT NOT NULL,
+ enabled INTEGER NOT NULL DEFAULT 1,
+ interval_minutes INTEGER NOT NULL,
+ tick_days INTEGER NOT NULL DEFAULT 30,
+ operational_days INTEGER NOT NULL DEFAULT 90,
+ vacuum INTEGER NOT NULL DEFAULT 0,
+ last_run_utc TEXT NULL,
+ next_run_utc TEXT NOT NULL,
+ last_status TEXT NULL,
+ last_error TEXT NULL,
+ updated_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_maintenance_schedules_due
+ON maintenance_schedules(enabled, next_run_utc);
+
+CREATE TABLE IF NOT EXISTS maintenance_schedule_runs (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ schedule_id INTEGER NOT NULL,
+ schedule_name TEXT NOT NULL,
+ task_type TEXT NOT NULL,
+ status TEXT NOT NULL,
+ started_utc TEXT NOT NULL,
+ completed_utc TEXT NULL,
+ result_json TEXT NOT NULL DEFAULT '{}',
+ error TEXT NULL,
+ FOREIGN KEY(schedule_id) REFERENCES maintenance_schedules(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS ix_maintenance_schedule_runs_created
+ON maintenance_schedule_runs(started_utc DESC);
+
 
 CREATE TABLE IF NOT EXISTS symbol_policies (
  provider_key TEXT NOT NULL,
@@ -501,6 +534,69 @@ class MarketDataStore:
             )
             for row in reversed(rows)
         ]
+
+    def upsert_maintenance_schedule(self, name: str, task_type: str, enabled: bool, interval_minutes: int,
+                                    next_run_utc: datetime, tick_days: int = 30, operational_days: int = 90,
+                                    vacuum: bool = False) -> dict[str, object]:
+        now = datetime.now(next_run_utc.tzinfo).isoformat()
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO maintenance_schedules
+                (name, task_type, enabled, interval_minutes, tick_days, operational_days, vacuum, next_run_utc, updated_utc)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET task_type=excluded.task_type, enabled=excluded.enabled,
+                interval_minutes=excluded.interval_minutes, tick_days=excluded.tick_days,
+                operational_days=excluded.operational_days, vacuum=excluded.vacuum,
+                next_run_utc=excluded.next_run_utc, updated_utc=excluded.updated_utc""",
+                (name, task_type, int(enabled), interval_minutes, tick_days, operational_days, int(vacuum),
+                 _iso(next_run_utc), now),
+            )
+        return self.get_maintenance_schedule(name) or {}
+
+    def get_maintenance_schedule(self, name: str) -> dict[str, object] | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM maintenance_schedules WHERE name=?", (name,)).fetchone()
+        return dict(row) if row else None
+
+    def list_maintenance_schedules(self) -> list[dict[str, object]]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT * FROM maintenance_schedules ORDER BY name").fetchall()
+        return [dict(row) for row in rows]
+
+    def due_maintenance_schedules(self, now: datetime) -> list[dict[str, object]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM maintenance_schedules WHERE enabled=1 AND next_run_utc<=? ORDER BY next_run_utc",
+                (_iso(now),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def begin_maintenance_schedule_run(self, schedule: dict[str, object], started: datetime) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO maintenance_schedule_runs(schedule_id,schedule_name,task_type,status,started_utc) VALUES(?,?,?,?,?)",
+                (schedule['id'], schedule['name'], schedule['task_type'], 'running', _iso(started)),
+            )
+            return int(cursor.lastrowid)
+
+    def complete_maintenance_schedule_run(self, run_id: int, schedule_id: int, status: str, completed: datetime,
+                                          next_run: datetime, result_json: str = '{}', error: str | None = None) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE maintenance_schedule_runs SET status=?,completed_utc=?,result_json=?,error=? WHERE id=?",
+                (status, _iso(completed), result_json, error, run_id),
+            )
+            connection.execute(
+                "UPDATE maintenance_schedules SET last_run_utc=?,next_run_utc=?,last_status=?,last_error=?,updated_utc=? WHERE id=?",
+                (_iso(completed), _iso(next_run), status, error, _iso(completed), schedule_id),
+            )
+
+    def list_maintenance_schedule_runs(self, limit: int = 100) -> list[dict[str, object]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM maintenance_schedule_runs ORDER BY started_utc DESC,id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def statistics(self) -> dict[str, object]:
         with self.connect() as connection:

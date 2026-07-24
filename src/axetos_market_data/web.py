@@ -21,6 +21,7 @@ from datetime import datetime, UTC, timedelta
 from .storage import MarketDataStore
 from .diagnostics import build_health, build_metrics, prometheus_text
 from .housekeeping import HousekeepingService, RetentionPolicy
+from .scheduler import MaintenanceScheduler
 from . import __version__
 from .policies import choose_canonical_source
 from .quality import CandleQualityService
@@ -55,6 +56,17 @@ class RetentionRequest(BaseModel):
     tick_days: int = Field(default=30, ge=1, le=3650)
     operational_days: int = Field(default=90, ge=1, le=3650)
     vacuum: bool = False
+
+
+class MaintenanceScheduleRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    task_type: str = "retention"
+    enabled: bool = True
+    interval_minutes: int = Field(default=1440, ge=1, le=525600)
+    tick_days: int = Field(default=30, ge=1, le=3650)
+    operational_days: int = Field(default=90, ge=1, le=3650)
+    vacuum: bool = False
+    run_immediately: bool = False
 
 
 class SymbolPolicyRequest(BaseModel):
@@ -102,12 +114,15 @@ def create_app(
     store.initialize()
     config_store = ConfigurationStore(configuration_path)
     supervisor = ProviderSupervisor(config_store, store)
+    scheduler = MaintenanceScheduler(store)
     started_utc = datetime.now(UTC)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         supervisor.load()
+        scheduler.start()
         yield
+        scheduler.stop()
         supervisor.shutdown()
         bridge.shutdown()
 
@@ -128,6 +143,7 @@ def create_app(
     app.state.quality = quality
     app.state.events = events
     app.state.calendar = calendar
+    app.state.scheduler = scheduler
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def dashboard() -> str:
@@ -278,6 +294,37 @@ def create_app(
     @app.get("/api/database/retention/history")
     def retention_history(limit: int = Query(default=50, ge=1, le=500)) -> dict[str, object]:
         values = store.list_cleanup_runs(limit)
+        return {"count": len(values), "items": values}
+
+    @app.get("/api/maintenance/schedules")
+    def maintenance_schedules() -> dict[str, object]:
+        values = store.list_maintenance_schedules()
+        return {"count": len(values), "items": values}
+
+    @app.put("/api/maintenance/schedules/{name}")
+    def maintenance_schedule_upsert(name: str, request: MaintenanceScheduleRequest) -> dict[str, object]:
+        if request.task_type != "retention":
+            raise HTTPException(400, "Only retention schedules are currently supported")
+        next_run = datetime.now(UTC) if request.run_immediately else datetime.now(UTC) + timedelta(minutes=request.interval_minutes)
+        value = store.upsert_maintenance_schedule(
+            name, request.task_type, request.enabled, request.interval_minutes, next_run,
+            request.tick_days, request.operational_days, request.vacuum,
+        )
+        events.record("info", "maintenance.schedule.updated", "Maintenance schedule updated",
+                      details={"schedule": name, "enabled": request.enabled, "interval_minutes": request.interval_minutes})
+        scheduler.wake()
+        return value
+
+    @app.post("/api/maintenance/schedules/{name}/run")
+    def maintenance_schedule_run(name: str) -> dict[str, object]:
+        try:
+            return scheduler.execute_by_name(name)
+        except KeyError as exc:
+            raise HTTPException(404, "Maintenance schedule not found") from exc
+
+    @app.get("/api/maintenance/runs")
+    def maintenance_schedule_runs(limit: int = Query(default=100, ge=1, le=1000)) -> dict[str, object]:
+        values = store.list_maintenance_schedule_runs(limit)
         return {"count": len(values), "items": values}
 
     @app.get("/api/calendar/closures")
@@ -559,7 +606,7 @@ def create_app(
 
 CONTROL_CENTER_HTML = r'''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Axetos Market Data Server</title><style>
 :root{color-scheme:dark;font-family:Inter,Segoe UI,sans-serif;background:#0c111b;color:#edf2f7}body{margin:0}header{padding:20px 28px;border-bottom:1px solid #253047;background:#111827;display:flex;justify-content:space-between;align-items:center}h1{font-size:21px;margin:0}.sub{font-size:12px;color:#93c5fd;margin-top:4px}.wrap{padding:24px;max-width:1280px;margin:auto}.stats,.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}.grid{grid-template-columns:repeat(auto-fit,minmax(340px,1fr));margin-top:18px}.card{border:1px solid #26334a;background:#121a29;border-radius:12px;padding:17px}.value{font-size:25px;font-weight:800}.label{color:#94a3b8;font-size:12px}.top{display:flex;justify-content:space-between;gap:12px}.name{font-size:18px;font-weight:700}.key{color:#94a3b8;font-size:12px}.status{font-size:12px;font-weight:800;padding:5px 9px;border-radius:999px;background:#334155}.status.live{background:#14532d;color:#bbf7d0}.status.failed{background:#7f1d1d;color:#fecaca}.rows{margin-top:15px;display:grid;grid-template-columns:1fr 1fr;gap:9px 14px;font-size:13px}button{background:#2563eb;color:white;border:0;border-radius:7px;padding:9px 13px;font-weight:600;cursor:pointer}.secondary{background:#334155}.danger{background:#991b1b}.actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:15px}dialog{background:#111827;color:#fff;border:1px solid #334155;border-radius:12px;width:min(720px,90vw)}form{display:grid;grid-template-columns:1fr 1fr;gap:12px}label{font-size:12px;color:#cbd5e1}input,select{width:100%;box-sizing:border-box;margin-top:5px;padding:9px;border-radius:6px;border:1px solid #334155;background:#0f172a;color:#fff}.wide{grid-column:1/-1}.toolbar{display:flex;justify-content:space-between;align-items:center;margin:20px 0 8px}.error{color:#fca5a5;font-size:12px;margin-top:8px}</style></head><body>
-<header><div><h1>Axetos Market Data Server</h1><div class="sub">Market-data infrastructure only · no orders, accounts, positions, or trading logic</div></div><button onclick="openAdd()">+ Add provider</button></header><main class="wrap"><section id="stats" class="stats"></section><div class="toolbar"><strong>Provider control center</strong><span><button class="secondary" onclick="scanQuality()">Scan candle quality</button> <button class="secondary" onclick="integrityCheck()">Check database</button> <button class="secondary" onclick="previewCleanup()">Preview cleanup</button> <button class="danger" onclick="runCleanup()">Run cleanup</button> <span id="count"></span></span></div><section id="providers" class="grid"></section><div class="toolbar"><strong>Operational log</strong><span><select id="eventSeverity" onchange="loadEvents()"><option value="">All severities</option><option>info</option><option>warning</option><option>error</option><option>critical</option></select> <input id="eventSearch" placeholder="Search events" oninput="eventSearchChanged()"> <button class="secondary" onclick="exportEvents('csv')">Export CSV</button> <button class="secondary" onclick="exportEvents('jsonl')">Export JSONL</button></span></div><section class="card"><div id="events"></div><div class="actions"><button class="secondary" onclick="previousEvents()">Previous</button><span id="eventPage" class="label"></span><button class="secondary" onclick="nextEvents()">Next</button></div></section></main>
+<header><div><h1>Axetos Market Data Server</h1><div class="sub">Market-data infrastructure only · no orders, accounts, positions, or trading logic</div></div><button onclick="openAdd()">+ Add provider</button></header><main class="wrap"><section id="stats" class="stats"></section><div class="toolbar"><strong>Provider control center</strong><span><button class="secondary" onclick="scanQuality()">Scan candle quality</button> <button class="secondary" onclick="integrityCheck()">Check database</button> <button class="secondary" onclick="previewCleanup()">Preview cleanup</button> <button class="secondary" onclick="configureRetentionSchedule()">Schedule daily cleanup</button> <button class="danger" onclick="runCleanup()">Run cleanup</button> <span id="count"></span></span></div><section id="providers" class="grid"></section><div class="toolbar"><strong>Operational log</strong><span><select id="eventSeverity" onchange="loadEvents()"><option value="">All severities</option><option>info</option><option>warning</option><option>error</option><option>critical</option></select> <input id="eventSearch" placeholder="Search events" oninput="eventSearchChanged()"> <button class="secondary" onclick="exportEvents('csv')">Export CSV</button> <button class="secondary" onclick="exportEvents('jsonl')">Export JSONL</button></span></div><section class="card"><div id="events"></div><div class="actions"><button class="secondary" onclick="previousEvents()">Previous</button><span id="eventPage" class="label"></span><button class="secondary" onclick="nextEvents()">Next</button></div></section></main>
 <dialog id="editor"><h2 id="title">Add provider</h2><form id="form"><label>Provider key<input name="provider_key" required placeholder="ICMarkets.MT5"></label><label>Display name<input name="display_name" required placeholder="IC Markets MT5"></label><label>Provider type<select name="kind"><option value="mock">Mock</option><option value="mt5">MetaTrader 5</option></select></label><label>Polling interval<input name="poll_interval_seconds" type="number" step="0.1" value="1"></label><label class="wide">Symbols, comma separated<input name="symbols" value="EUR/USD"></label><label class="wide">MT5 terminal path<input name="terminal_path" placeholder="Optional terminal64.exe path"></label><label>Priority<input name="priority" type="number" min="0" value="100"></label><label>Fallback after seconds<input name="fallback_after_seconds" type="number" min="0.1" step="0.1" value="10"></label><label>Batch window seconds<input name="batch_window_seconds" type="number" min="1" value="5"></label><label>Batch limit<input name="batch_limit" type="number" min="100" value="50000"></label><label>Maintenance interval minutes<input name="maintenance_interval_minutes" type="number" min="1" value="60"></label><label>Maintenance backfill days<input name="maintenance_backfill_days" type="number" min="1" value="2"></label><label><input name="maintenance_enabled" type="checkbox" style="width:auto"> Scheduled maintenance</label><label><input name="enabled" type="checkbox" checked style="width:auto"> Enabled</label><label><input name="auto_start" type="checkbox" checked style="width:auto"> Auto-start</label><div id="error" class="error wide"></div><div class="actions wide"><button type="button" class="secondary" onclick="editor.close()">Cancel</button><button type="submit">Save</button></div></form></dialog>
 <script>
 const root=document.getElementById('providers'),eventsRoot=document.getElementById('events'),eventPageLabel=document.getElementById('eventPage'),stats=document.getElementById('stats'),count=document.getElementById('count'),editor=document.getElementById('editor'),form=document.getElementById('form'),title=document.getElementById('title'),error=document.getElementById('error');let editing=null;const esc=v=>String(v??'').replace(/[&<>\"]/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[x]));
@@ -574,6 +621,7 @@ async function act(key,action){await fetch('/api/providers/'+encodeURIComponent(
 async function scanQuality(){const r=await fetch('/api/quality/scan',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({limit:10000,max_move_percent:20})}),x=await r.json();alert(r.ok?`Quality scan complete\nCandles scanned: ${x.scanned}\nIssues detected: ${x.issues}\nSevere: ${x.severe}`:(x.detail||'Quality scan failed'));load()}
 async function integrityCheck(){const r=await fetch('/api/database/integrity'),x=await r.json();alert(x.status==='ok'?'Database integrity check passed.':'Integrity check failed: '+x.messages.join('\n'))}
 async function previewCleanup(){const r=await fetch('/api/database/retention/preview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({tick_days:30,operational_days:90,vacuum:false})}),x=await r.json(),d=x.would_delete;alert(`30/90 day retention preview\nTicks: ${d.ticks}\nResolved gaps: ${d.resolved_gaps}\nIngestion states: ${d.ingestion_states}\nRepair runs: ${d.repair_runs}\nCandles: 0`) }
+async function configureRetentionSchedule(){const minutes=Number(prompt('Retention interval in minutes (1440 = daily):','1440'));if(!Number.isFinite(minutes)||minutes<1)return;const r=await fetch('/api/maintenance/schedules/default-retention',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({name:'default-retention',task_type:'retention',enabled:true,interval_minutes:minutes,tick_days:30,operational_days:90,vacuum:false,run_immediately:false})}),x=await r.json();if(!r.ok){alert(x.detail||'Could not save schedule');return}alert(`Retention schedule saved\nNext run: ${new Date(x.next_run_utc).toLocaleString()}`)}
 async function runCleanup(){if(!confirm('Delete raw ticks older than 30 days and operational history older than 90 days? Candles are never deleted.'))return;const vacuum=confirm('Also compact the SQLite database with VACUUM? This can take time and briefly block writers.');const r=await fetch('/api/database/retention/run',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({tick_days:30,operational_days:90,vacuum})}),x=await r.json();if(!r.ok){alert(x.detail||'Cleanup failed');return}alert(`Cleanup complete\nTicks deleted: ${x.ticks_deleted}\nResolved gaps deleted: ${x.resolved_gaps_deleted}\nIntegrity: ${x.integrity_status}`);load()}
 form.onsubmit=async e=>{e.preventDefault();const d=new FormData(form),key=editing||d.get('provider_key'),payload={provider_key:key,display_name:d.get('display_name'),kind:d.get('kind'),poll_interval_seconds:Number(d.get('poll_interval_seconds')),symbols:String(d.get('symbols')).split(',').map(x=>x.trim()).filter(Boolean),terminal_path:d.get('terminal_path')||null,priority:Number(d.get('priority')),fallback_after_seconds:Number(d.get('fallback_after_seconds')),batch_window_seconds:Number(d.get('batch_window_seconds')),batch_limit:Number(d.get('batch_limit')),maintenance_enabled:form.elements.maintenance_enabled.checked,maintenance_interval_minutes:Number(d.get('maintenance_interval_minutes')),maintenance_backfill_days:Number(d.get('maintenance_backfill_days')),enabled:form.elements.enabled.checked,auto_start:form.elements.auto_start.checked};const r=await fetch('/api/providers/'+encodeURIComponent(key),{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});if(!r.ok){error.textContent=(await r.json()).detail||r.statusText;return}editor.close();load()};load();loadEvents();setInterval(()=>{load();loadEvents()},3000);
 </script></body></html>'''

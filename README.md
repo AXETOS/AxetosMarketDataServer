@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.15.0
+## Version 0.16.0
 
-Version 0.15.0 adds canonical symbol normalization and provider alias resolution. Broker-specific symbols such as `EURUSD`, `EURUSD.pro`, and `EURUSD.raw` resolve to the same canonical `EUR/USD` identity. Explicit symbol policies take precedence over provider configuration aliases, which take precedence over automatic normalization. MT5 direct ingestion, bridge instrument discovery, quotes, ticks, candles, and historical backfill now use the same resolver.
+Version 0.16.0 adds persistent scheduled retention and maintenance. Retention schedules are stored in SQLite, survive restarts, execute automatically in a background scheduler, and retain run status, results, errors, last-run time, and next-run time. Operators can create or update schedules, trigger them immediately, and inspect execution history through the management API.
 
 ## Operational diagnostics
 
@@ -25,6 +25,7 @@ GET /metrics
 - Batched MetaTrader 5 tick retrieval with overlap protection
 - Configurable batch window and batch limit
 - Optional scheduled backfill and gap repair
+- Persistent scheduled retention with automatic execution and run history
 - Maintenance status and manual trigger in the management UI
 
 - Continuous provider supervision in background worker threads

@@ -17,6 +17,11 @@ class ProviderConfig:
     terminal_path: str | None = None
     priority: int = 100
     fallback_after_seconds: float = 10.0
+    batch_window_seconds: int = 5
+    batch_limit: int = 50000
+    maintenance_enabled: bool = False
+    maintenance_interval_minutes: int = 60
+    maintenance_backfill_days: int = 2
 
     def normalized_symbols(self) -> list[str]:
         return self.symbols or ["EUR/USD"]

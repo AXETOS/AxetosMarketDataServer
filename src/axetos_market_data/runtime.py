@@ -11,6 +11,7 @@ from .providers.mock import MockTickProvider
 from .providers.mt5 import MetaTrader5TickProvider
 from .service import MarketDataService
 from .routing import ProviderAuthorityRegistry
+from .maintenance import ProviderMaintenanceWorker
 from .storage import MarketDataStore
 
 
@@ -53,7 +54,10 @@ class ProviderWorker:
     def _provider(self):
         symbols = self.config.normalized_symbols()
         if self.config.kind.lower() == "mt5":
-            return MetaTrader5TickProvider(symbols, self.config.terminal_path)
+            return MetaTrader5TickProvider(
+                symbols, self.config.terminal_path, self.config.provider_key,
+                self.config.batch_window_seconds, self.config.batch_limit,
+            )
         return MockTickProvider(symbols[0], self.config.poll_interval_seconds, provider=self.config.provider_key)
 
     def _run(self) -> None:
@@ -95,6 +99,7 @@ class ProviderSupervisor:
         self.config_store = config_store
         self.data_store = data_store
         self._workers: dict[str, ProviderWorker] = {}
+        self._maintenance: dict[str, ProviderMaintenanceWorker] = {}
         self.authority = ProviderAuthorityRegistry()
         self._lock = threading.RLock()
 
@@ -104,6 +109,10 @@ class ProviderSupervisor:
             self.authority.replace_configs(configs)
             for config in configs:
                 self._workers[config.provider_key] = ProviderWorker(config, self.data_store, self.authority)
+                if config.kind.lower() == "mt5" and config.maintenance_enabled:
+                    maintenance = ProviderMaintenanceWorker(config, self.data_store)
+                    self._maintenance[config.provider_key] = maintenance
+                    maintenance.start()
                 if config.enabled and config.auto_start:
                     self._workers[config.provider_key].start()
 
@@ -111,10 +120,17 @@ class ProviderSupervisor:
         with self._lock:
             for worker in self._workers.values():
                 worker.stop()
+            for worker in self._maintenance.values():
+                worker.stop()
 
     def list_views(self) -> list[dict[str, object]]:
         with self._lock:
-            return [worker.view() for worker in self._workers.values()]
+            views = []
+            for key, worker in self._workers.items():
+                view = worker.view()
+                view["maintenance"] = self._maintenance[key].view() if key in self._maintenance else None
+                views.append(view)
+            return views
 
     def get(self, provider_key: str) -> ProviderWorker | None:
         with self._lock:
@@ -125,10 +141,17 @@ class ProviderSupervisor:
             existing = self._workers.pop(config.provider_key, None)
             if existing:
                 existing.stop()
+            old_maintenance = self._maintenance.pop(config.provider_key, None)
+            if old_maintenance:
+                old_maintenance.stop()
             self.config_store.upsert(config)
             self.authority.replace_configs(self.config_store.read_all())
             worker = ProviderWorker(config, self.data_store, self.authority)
             self._workers[config.provider_key] = worker
+            if config.kind.lower() == "mt5" and config.maintenance_enabled:
+                maintenance = ProviderMaintenanceWorker(config, self.data_store)
+                self._maintenance[config.provider_key] = maintenance
+                maintenance.start()
             if config.enabled and config.auto_start:
                 worker.start()
             return worker.view()
@@ -147,6 +170,11 @@ class ProviderSupervisor:
             self.config_store.upsert(worker.config)
             self.authority.replace_configs(self.config_store.read_all())
             worker.start()
+        elif action == "maintenance":
+            maintenance = self._maintenance.get(provider_key)
+            if maintenance is None:
+                raise ValueError("Scheduled maintenance is not enabled for this provider")
+            maintenance.trigger()
         elif action == "disable":
             worker.config.enabled = False
             self.config_store.upsert(worker.config)
@@ -162,6 +190,9 @@ class ProviderSupervisor:
             worker = self._workers.pop(provider_key, None)
             if worker:
                 worker.stop()
+            maintenance = self._maintenance.pop(provider_key, None)
+            if maintenance:
+                maintenance.stop()
             removed = self.config_store.delete(provider_key)
             self.authority.replace_configs(self.config_store.read_all())
             return removed

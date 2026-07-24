@@ -73,7 +73,7 @@ class IngestionBenchmark:
             builder = CandleBuilder(store)
             written = 0
             batch: list[Tick] = []
-            for tick in self._generate_ticks(started):
+            for tick in self._generate_ticks():
                 batch.append(tick)
                 builder.ingest(tick)
                 if len(batch) >= self.batch_size:
@@ -106,7 +106,8 @@ class IngestionBenchmark:
             if temporary is not None:
                 temporary.cleanup()
 
-    def _generate_ticks(self, started: datetime):
+    def _generate_ticks(self):
+        started = datetime(2020, 1, 1, tzinfo=UTC)
         base = Decimal("1.10000")
         spread = Decimal("0.00012")
         for index in range(self.ticks):

@@ -17,7 +17,7 @@ def test_seeded_feed_restores_inactive_state():
 
 
 def test_release_028_metadata_and_readme():
-    assert __version__ == "0.29.0"
+    assert __version__ == "0.30.0"
     readme = open("README.md", encoding="utf-8").read()
-    assert "## Version 0.29.0" in readme
+    assert "## Version 0.30.0" in readme
     assert "system health healthy" in readme.lower()

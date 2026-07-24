@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.29.0
+## Version 0.30.0
 
-Version 0.29.0 adds a deterministic ingestion benchmark so SQLite and PostgreSQL deployments can be measured with the same generated workload. The benchmark reports elapsed time, sustained ticks per second, candle output, peak Python memory, and database size. The management dashboard also renames **Live providers** to **Connected providers** so connectivity is not confused with market activity.
+Version 0.30.0 adds an administrator-only performance benchmark panel to the management UI. Benchmarks run asynchronously, can compare several database batch sizes, report throughput and memory use, and recommend the best tested batch size for the current machine. Synthetic timestamps are now aligned to a fixed minute boundary so repeated runs with identical inputs produce the same candle count.
 
 Version 0.28.0 separates infrastructure health, provider connectivity, and market-feed activity. Connected providers now keep system health healthy during closed or inactive markets, configured feed state restores as INACTIVE after restart, and the management UI labels an operational MT5 worker as Connected rather than Live.
 
@@ -337,6 +337,12 @@ docker compose down -v  # also removes persisted volumes
 
 The Linux container does not provide the Windows-only direct MetaTrader 5 Python terminal integration. Use the MT5 bridge ingestion path for container deployments, or run the direct MT5 provider on Windows outside Docker.
 
+## Management UI benchmark
+
+Administrators can select **Run benchmark** in the management toolbar. Enter the synthetic tick count, instrument count, and one or more comma-separated batch sizes. The job runs in a background thread and the dialog reports progress, throughput, elapsed time, peak Python memory, and the best-performing tested batch size.
+
+Benchmarking creates heavy database load. Use it on a development or maintenance instance rather than during normal live ingestion.
+
 ## Ingestion benchmark
 
 Run a repeatable synthetic workload without requiring MT5 or an external market-data provider:
@@ -348,7 +354,7 @@ axetos-market-data benchmark --ticks 100000 --instruments 10 --batch-size 1000
 By default, the benchmark uses a temporary SQLite database and removes it afterward. Preserve the benchmark database by supplying the normal database path together with `--keep-database`:
 
 ```powershell
-axetos-market-data --database data/benchmark.sqlite benchmark --ticks 1000000 --instruments 25 --batch-size 5000 --keep-database --output benchmark-results/v0.29.0.json
+axetos-market-data --database data/benchmark.sqlite benchmark --ticks 1000000 --instruments 25 --batch-size 5000 --keep-database --output benchmark-results/v0.30.0.json
 ```
 
 The JSON result records requested and written ticks, elapsed time, sustained throughput, candle count, peak Python memory, backend name, and database size. Results are intended for comparing releases on the same machine; they are not presented as universal hardware-independent performance claims.

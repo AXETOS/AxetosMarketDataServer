@@ -32,4 +32,4 @@ def test_quality_scan_quarantine_and_rebuild(tmp_path):
 
 
 def test_version_is_v011():
-    assert __version__ == "0.29.0"
+    assert __version__ == "0.30.0"

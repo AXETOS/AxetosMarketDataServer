@@ -90,6 +90,7 @@ def required_role(path: str, method: str) -> Role:
         "/api/database/retention/run",
         "/api/maintenance/schedules",
         "/api/symbol-policies",
+        "/api/benchmarks",
     )
     if method == "DELETE" or path.startswith(admin_prefixes):
         return Role.ADMINISTRATOR

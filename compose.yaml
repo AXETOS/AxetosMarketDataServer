@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-axetos_market_data}
+      POSTGRES_USER: ${POSTGRES_USER:-axetos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  market-data-server:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AXETOS_DATABASE_URL: postgresql://${POSTGRES_USER:-axetos}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-axetos_market_data}
+      AXETOS_AUTH_ENABLED: ${AXETOS_AUTH_ENABLED:-false}
+      AXETOS_VIEWER_TOKEN: ${AXETOS_VIEWER_TOKEN:-}
+      AXETOS_OPERATOR_TOKEN: ${AXETOS_OPERATOR_TOKEN:-}
+      AXETOS_ADMIN_TOKEN: ${AXETOS_ADMIN_TOKEN:-}
+      AXETOS_BRIDGE_TOKEN: ${AXETOS_BRIDGE_TOKEN:-}
+      AXETOS_ALERT_WEBHOOK_URL: ${AXETOS_ALERT_WEBHOOK_URL:-}
+      AXETOS_ALERT_MIN_SEVERITY: ${AXETOS_ALERT_MIN_SEVERITY:-error}
+    ports:
+      - "${AXETOS_PORT:-8000}:8000"
+    volumes:
+      - app-data:/app/data
+      - backup-data:/app/backups
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  postgres-data:
+  app-data:
+  backup-data:

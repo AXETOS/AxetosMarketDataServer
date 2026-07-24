@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.24.0
+## Version 0.25.0
 
-Version 0.24.0 adds verified SQLite backup and restore tooling. Backups use SQLite's online backup API, include provider configuration when present, and are packaged as portable ZIP archives with a manifest, SHA-256 checksums, application version, and UTC creation time. Every created archive is verified immediately, including a SQLite integrity check. Restore refuses to overwrite an existing database unless explicitly authorized. PostgreSQL deployments continue to use `pg_dump` and `pg_restore`.
+Version 0.25.0 adds reproducible Docker deployment for the market-data server and PostgreSQL. The release includes a non-root application image, health checks, persistent named volumes, restart policies, environment-driven configuration, and a Docker Compose stack suitable for local evaluation and deployment hardening.
 
 ## Storage backends
 
@@ -275,11 +275,31 @@ pytest -q
 
 The test suite covers candle creation, storage, provider configuration, historical backfill, gap repair, and the web API. GitHub Actions runs it on every push and pull request.
 
+## Docker deployment
+
+Version 0.25.0 includes a production-oriented container image and a Docker Compose stack with PostgreSQL. Copy the environment template, replace the example password and tokens, then start the stack:
+
+```powershell
+Copy-Item .env.example .env
+docker compose up --build -d
+```
+
+The management UI is available at `http://localhost:8000`, and the health endpoint is available at `http://localhost:8000/api/health`. Both services have health checks and restart policies. PostgreSQL data, application runtime data, and backup archives use named Docker volumes.
+
+```powershell
+docker compose ps
+docker compose logs -f market-data-server
+docker compose down
+docker compose down -v  # also removes persisted volumes
+```
+
+The Linux container does not provide the Windows-only direct MetaTrader 5 Python terminal integration. Use the MT5 bridge ingestion path for container deployments, or run the direct MT5 provider on Windows outside Docker.
+
 ## Roadmap
 
 - PostgreSQL integration tests in CI using an ephemeral service database
-- Deployment packaging with Docker and health-checked PostgreSQL
 - Load and endurance benchmarks for sustained tick ingestion
+- Automated schema migrations and deployment upgrade verification
 
 ## Candle quality and recovery
 
@@ -335,7 +355,7 @@ GET  /api/backups
 POST /api/backups
 ```
 
-The management UI includes a **Create backup** action. Backup archives are runtime data under `data/backups/` and are excluded from release ZIPs and Git.
+The management UI includes a **Create backup** action.
 
 ## License
 

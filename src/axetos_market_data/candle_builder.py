@@ -23,7 +23,7 @@ class _MutableCandle:
 
     @classmethod
     def from_tick(cls, tick: Tick, opening_price: Decimal | None = None) -> "_MutableCandle":
-        first_price = tick.mid
+        first_price = tick.market_price
         open_price = first_price if opening_price is None else opening_price
         return cls(
             provider=tick.provider,
@@ -38,7 +38,7 @@ class _MutableCandle:
         )
 
     def apply(self, tick: Tick) -> None:
-        price = tick.mid
+        price = tick.market_price
         self.high = max(self.high, price)
         self.low = min(self.low, price)
         self.close = price

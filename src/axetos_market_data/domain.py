@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 
 UTC = timezone.utc
@@ -35,8 +35,21 @@ class Tick:
             raise ValueError("ask cannot be lower than bid")
 
     @property
+    def market_price(self) -> Decimal:
+        """Normalized quote midpoint used as the reference market price.
+
+        Spot FX commonly has no reliable centralized last-trade price.  The
+        midpoint is therefore normalized to the broker quote precision so
+        spread-only flicker does not masquerade as market movement.
+        """
+        exponent = min(self.bid.as_tuple().exponent, self.ask.as_tuple().exponent)
+        quantum = Decimal("1").scaleb(exponent)
+        return ((self.bid + self.ask) / Decimal("2")).quantize(quantum, rounding=ROUND_HALF_UP)
+
+    @property
     def mid(self) -> Decimal:
-        return (self.bid + self.ask) / Decimal("2")
+        """Backward-compatible alias for the normalized reference price."""
+        return self.market_price
 
 
 @dataclass(frozen=True, slots=True)

@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.26.0
+## Version 0.27.0
 
-Version 0.26.0 adds feed-derived market-state intelligence and feed-aware candle continuity. The server now separates provider connectivity from market-feed activity, ignores unchanged quote observations as market ticks, continues monitoring MT5 while a feed is inactive, investigates missing intervals when movement resumes, and connects candle opens to the previous close only when feed evidence confirms continuity.
+Version 0.27.0 makes feed activity and live candle construction use one normalized reference market price. For spot FX and CFDs without a reliable last-trade price, the server uses the bid/ask midpoint normalized to the broker quote precision. Bid and ask remain available for spread and execution display, but spread-only flicker no longer keeps a feed falsely LIVE or creates artificial candle movement.
 
 ## Feed-derived market status and candle continuity
 
@@ -194,6 +194,16 @@ The server is intentionally separated from any trading platform. A trading platf
 - Python 3.11 or newer
 - MetaTrader 5 terminal and the `MetaTrader5` Python package only when using an MT5 provider
 - PostgreSQL 14 or newer and `psycopg` only when selecting PostgreSQL storage
+
+### Reference market price
+
+For spot FX, MT5 commonly supplies bid and ask quotes without a reliable centralized last-traded price. Axetos therefore derives a reference market price from the normalized midpoint:
+
+```text
+market_price = normalize((bid + ask) / 2, broker_quote_precision)
+```
+
+The feed-state engine and live candle builder use this same value. Bid and ask are still retained for spread diagnostics and execution-facing consumers. A spread change that leaves the normalized midpoint unchanged is counted as a provider observation but is not accepted as market movement. Exchange-traded instruments can later prefer a reliable provider-supplied last-trade price when available.
 
 ## Installation
 

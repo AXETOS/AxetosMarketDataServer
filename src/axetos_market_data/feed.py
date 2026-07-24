@@ -28,6 +28,7 @@ class FeedObservation:
     last_price_change_utc: datetime | None = None
     last_bid: Decimal | None = None
     last_ask: Decimal | None = None
+    last_market_price: Decimal | None = None
     observations: int = 0
     accepted_ticks: int = 0
     ignored_unchanged_updates: int = 0
@@ -65,7 +66,8 @@ class FeedStateEngine:
                 self._items[key] = item
 
             previous_state = self._state_at(item, tick.timestamp)
-            changed = item.last_bid is None or item.last_ask is None or tick.bid != item.last_bid or tick.ask != item.last_ask
+            market_price = tick.market_price
+            changed = item.last_market_price is None or market_price != item.last_market_price
             item.observations += 1
             item.last_observation_utc = tick.timestamp
 
@@ -78,6 +80,7 @@ class FeedStateEngine:
             recovery_from = item.last_price_change_utc if recovery_required else None
             item.last_bid = tick.bid
             item.last_ask = tick.ask
+            item.last_market_price = market_price
             item.last_price_change_utc = tick.timestamp
             item.accepted_ticks += 1
             if recovery_required:
@@ -115,6 +118,9 @@ class FeedStateEngine:
                     "monitoring": True,
                     "last_observation_utc": self._iso(item.last_observation_utc),
                     "last_price_change_utc": self._iso(item.last_price_change_utc),
+                    "market_price": None if item.last_market_price is None else str(item.last_market_price),
+                    "last_bid": None if item.last_bid is None else str(item.last_bid),
+                    "last_ask": None if item.last_ask is None else str(item.last_ask),
                     "unchanged_seconds": round(unchanged, 3),
                     "observations": item.observations,
                     "accepted_ticks": item.accepted_ticks,

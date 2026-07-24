@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-from pathlib import Path
-
 from .aggregation import CandleAggregator
 from .providers.mock import MockTickProvider
 from .providers.mt5 import MetaTrader5TickProvider
@@ -38,7 +36,7 @@ def main() -> None:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    store = MarketDataStore(Path(args.database))
+    store = MarketDataStore(args.database)
     store.initialize()
 
     if args.command == "aggregate":

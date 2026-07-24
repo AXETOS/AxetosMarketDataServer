@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from .domain import Candle, Tick
+from .database import DatabaseBackend, ConnectionLike
 
 
 _SCHEMA = """
@@ -215,14 +216,22 @@ CREATE TABLE IF NOT EXISTS mt5_bridge_quotes (
 """
 
 
+
+def _postgres_schema() -> str:
+    schema = _SCHEMA
+    schema = "\n".join(line for line in schema.splitlines() if not line.strip().upper().startswith("PRAGMA "))
+    schema = schema.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+    return schema
+
 def _iso(value: datetime) -> str:
     return value.isoformat(timespec="microseconds")
 
 
 class MarketDataStore:
     def __init__(self, database_path: str | Path) -> None:
-        self.database_path = Path(database_path)
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.database_target = str(database_path)
+        self.backend = DatabaseBackend(database_path)
+        self.database_path = self.backend.path
         self._tick_publisher: Callable[[Tick], None] | None = None
         self._candle_publisher: Callable[[Candle], None] | None = None
 
@@ -235,29 +244,29 @@ class MarketDataStore:
         self._candle_publisher = candle_publisher
 
     @contextmanager
-    def connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.database_path, timeout=30)
-        try:
-            connection.row_factory = sqlite3.Row
+    def connect(self) -> Iterator[ConnectionLike]:
+        with self.backend.connect() as connection:
             yield connection
-            connection.commit()
-        finally:
-            connection.close()
 
     def initialize(self) -> None:
         with self.connect() as connection:
-            connection.executescript(_SCHEMA)
+            connection.executescript(_postgres_schema() if self.backend.kind == "postgresql" else _SCHEMA)
 
 
     def record_operational_event(self, severity: str, category: str, provider: str | None,
                                  instrument: str | None, message: str, timestamp: datetime,
                                  details_json: str = "{}") -> int:
         with self.connect() as connection:
+            query = """INSERT INTO operational_events(severity,category,provider,instrument,message,timestamp_utc,details_json)
+                VALUES(?,?,?,?,?,?,?)"""
+            if self.backend.kind == "postgresql":
+                query += " RETURNING id"
             cursor = connection.execute(
-                """INSERT INTO operational_events(severity,category,provider,instrument,message,timestamp_utc,details_json)
-                VALUES(?,?,?,?,?,?,?)""",
+                query,
                 (severity, category, provider, instrument, message, _iso(timestamp), details_json),
             )
+            if self.backend.kind == "postgresql":
+                return int(cursor.fetchone()[0])
             return int(cursor.lastrowid)
 
     def list_operational_events(self, *, page: int = 1, page_size: int = 50,
@@ -630,7 +639,8 @@ class MarketDataStore:
             "instruments": instruments,
             "latest_tick_utc": latest_tick,
             "latest_candle_utc": latest_candle,
-            "database_path": str(self.database_path),
+            "database_path": self.database_target,
+            "database_backend": self.backend.kind,
             "unresolved_gaps": gaps,
             "unresolved_quality_issues": quality_issues,
         }
@@ -644,6 +654,10 @@ class MarketDataStore:
 
 
     def integrity_check(self) -> dict[str, object]:
+        if self.backend.kind == "postgresql":
+            with self.connect() as connection:
+                connection.execute("SELECT 1").fetchone()
+            return {"status": "ok", "messages": ["PostgreSQL connection and transaction check passed"]}
         with self.connect() as connection:
             rows = connection.execute("PRAGMA integrity_check").fetchall()
         messages = [str(row[0]) for row in rows]
@@ -683,7 +697,9 @@ class MarketDataStore:
         operational_before: datetime,
         vacuum: bool = False,
     ) -> dict[str, object]:
-        before = self.database_path.stat().st_size if self.database_path.exists() else 0
+        if self.backend.kind == "postgresql" and vacuum:
+            raise ValueError("VACUUM from the retention endpoint is SQLite-only; use PostgreSQL maintenance tooling")
+        before = (self.database_path.stat().st_size if self.database_path is not None and self.database_path.exists() else 0)
         with self.connect() as connection:
             cursor = connection.execute("DELETE FROM ticks WHERE timestamp_utc < ?", (_iso(ticks_before),))
             ticks_deleted = max(0, cursor.rowcount)
@@ -701,21 +717,23 @@ class MarketDataStore:
             )
             repairs_deleted = max(0, cursor.rowcount)
 
-        checkpoint = sqlite3.connect(self.database_path, timeout=30, isolation_level=None)
-        try:
-            checkpoint.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        finally:
-            checkpoint.close()
-
-        if vacuum:
-            connection = sqlite3.connect(self.database_path, timeout=30, isolation_level=None)
+        if self.backend.kind == "sqlite":
+            assert self.database_path is not None
+            checkpoint = sqlite3.connect(self.database_path, timeout=30, isolation_level=None)
             try:
-                connection.execute("VACUUM")
+                checkpoint.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             finally:
-                connection.close()
+                checkpoint.close()
+
+            if vacuum:
+                connection = sqlite3.connect(self.database_path, timeout=30, isolation_level=None)
+                try:
+                    connection.execute("VACUUM")
+                finally:
+                    connection.close()
 
         integrity = self.integrity_check()
-        after = self.database_path.stat().st_size if self.database_path.exists() else 0
+        after = (self.database_path.stat().st_size if self.database_path is not None and self.database_path.exists() else 0)
         result: dict[str, object] = {
             "ticks_before_utc": _iso(ticks_before),
             "operational_before_utc": _iso(operational_before),
@@ -821,7 +839,7 @@ class MarketDataStore:
             return connection.total_changes>before
 
     @staticmethod
-    def _policy_dict(row: sqlite3.Row) -> dict[str, object]:
+    def _policy_dict(row: object) -> dict[str, object]:
         value=dict(row)
         for key in ("enabled","allow_live","allow_history"): value[key]=bool(value[key])
         return value

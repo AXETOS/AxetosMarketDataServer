@@ -1,12 +1,47 @@
 # Axetos Market Data Server
 
-A standalone Python market-data server for collecting financial market ticks, building OHLC candles, aggregating timeframes, validating historical data, and storing the result in SQLite.
+A standalone Python market-data server for collecting financial market ticks, building OHLC candles, aggregating timeframes, validating historical data, and storing the result in SQLite or PostgreSQL.
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.18.0
+## Version 0.19.0
 
-Version 0.18.0 adds a live Server-Sent Events consumer API for ticks and candle updates. Trading-platform clients can subscribe without polling SQLite, filter by provider or canonical instrument, and monitor subscriber, publication, and dropped-event counters. Per-client queues are bounded so slow consumers cannot block market-data ingestion.
+Version 0.19.0 adds a database-backend abstraction and optional PostgreSQL storage. SQLite remains the default for local development and compact deployments, while PostgreSQL can be selected with `AXETOS_DATABASE_URL` for installations that need a dedicated database server and more concurrent consumers.
+
+## Storage backends
+
+### SQLite (default)
+
+No configuration is required:
+
+```text
+data/market_data.sqlite
+```
+
+SQLite uses WAL mode, supports the built-in integrity check, and supports optional compaction through the retention endpoint.
+
+### PostgreSQL
+
+Install the optional driver:
+
+```powershell
+pip install -e ".[dev,postgres]"
+```
+
+Set a PostgreSQL connection URL before starting the service:
+
+```powershell
+$env:AXETOS_DATABASE_URL="postgresql://axetos:replace-me@localhost:5432/axetos_market_data"
+axetos-market-data-server
+```
+
+The server creates the required tables and indexes when the database user has schema permissions. PostgreSQL maintenance such as `VACUUM`, backup, replication, and point-in-time recovery remains the responsibility of PostgreSQL administration tooling; the API will not attempt SQLite-specific compaction against PostgreSQL.
+
+Inspect the active backend through:
+
+```text
+GET /api/storage
+```
 
 ## Live consumer stream
 
@@ -23,7 +58,7 @@ Optional repeated query parameters filter the stream:
 /api/stream/live?instrument=EUR%2FUSD&provider=ICMarkets.MT5&event_type=tick&event_type=candle
 ```
 
-The stream emits `ready`, `tick`, and `candle` event types and sends heartbeat comments during quiet periods. When authentication is enabled, a Viewer, Operator, or Administrator management token is required. The endpoint is intended for live display and downstream notification; SQLite remains the authoritative durable history.
+The stream emits `ready`, `tick`, and `candle` event types and sends heartbeat comments during quiet periods. When authentication is enabled, a Viewer, Operator, or Administrator management token is required. The endpoint is intended for live display and downstream notification; The configured durable store remains the authoritative history.
 
 ## Operational diagnostics
 
@@ -61,6 +96,7 @@ GET /metrics
 - Contiguous gap grouping to reduce provider requests
 - Repair-run audit history
 - SQLite storage with WAL mode and indexed lookup paths
+- Optional PostgreSQL storage through the same market-data store API
 - Provider configuration persisted in JSON
 - Canonical symbol normalization with provider-specific aliases and policy overrides
 - Browser-based provider control center
@@ -105,7 +141,7 @@ Provider supervisor and worker
         v
 Tick normalization and validation
         |
-        +----> SQLite tick store
+        +----> Durable tick store (SQLite or PostgreSQL)
         |
         v
 1-minute candle builder
@@ -114,7 +150,7 @@ Tick normalization and validation
 Higher-timeframe aggregation
         |
         v
-SQLite candle store
+Durable candle store (SQLite or PostgreSQL)
 
 Historical provider data
         |
@@ -122,12 +158,13 @@ Historical provider data
 Backfill -> validation -> gap detection -> repair -> audit history
 ```
 
-The server is intentionally separated from any trading platform. A trading platform may read the database or consume the REST endpoints, but order execution remains outside this project.
+The server is intentionally separated from any trading platform. A trading platform should normally consume the REST or live-stream endpoints, but order execution remains outside this project.
 
 ## Requirements
 
 - Python 3.11 or newer
 - MetaTrader 5 terminal and the `MetaTrader5` Python package only when using an MT5 provider
+- PostgreSQL 14 or newer and `psycopg` only when selecting PostgreSQL storage
 
 ## Installation
 
@@ -142,6 +179,12 @@ For MetaTrader 5 support:
 
 ```powershell
 pip install -e ".[dev,mt5]"
+```
+
+For PostgreSQL support:
+
+```powershell
+pip install -e ".[dev,postgres]"
 ```
 
 ## Run the server
@@ -178,6 +221,7 @@ The web UI shows database statistics and the live state of each configured provi
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/api/health` | Server health and version |
+| `GET` | `/api/storage` | Active storage backend and backend capabilities |
 | `GET` | `/api/operational-events` | Query structured operational events with filtering and pagination |
 | `GET` | `/api/symbol-normalization` | Preview canonical resolution for a provider symbol |
 | `GET/PUT/DELETE` | `/api/symbol-policies` | Manage explicit provider-symbol mappings and routing policy |
@@ -232,10 +276,11 @@ The test suite covers candle creation, storage, provider configuration, historic
 
 ## Roadmap
 
-- Richer symbol alias mapping
-- PostgreSQL storage option
-- Configurable scheduled retention policies
-- Authentication and role-based management access
+- PostgreSQL integration tests in CI using an ephemeral service database
+- Automated backup and restore commands
+- Deployment packaging with Docker and health-checked PostgreSQL
+- Alert delivery for provider failures and data-quality incidents
+- Load and endurance benchmarks for sustained tick ingestion
 
 ## Candle quality and recovery
 

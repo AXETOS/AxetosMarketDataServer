@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -143,6 +144,15 @@ def create_app(
     app.state.security = security
     app.state.store = store
     app.state.supervisor = supervisor
+
+    @app.get("/api/storage")
+    def storage_status() -> dict[str, object]:
+        return {
+            "backend": store.backend.kind,
+            "target": store.database_target if store.backend.kind == "sqlite" else "PostgreSQL",
+            "sqlite_wal": store.backend.kind == "sqlite",
+            "retention_vacuum_supported": store.backend.kind == "sqlite",
+        }
     housekeeping = HousekeepingService(store)
     bridge = Mt5BridgeService(store)
     quality = CandleQualityService(store)
@@ -684,4 +694,4 @@ async function runCleanup(){if(!confirm('Delete raw ticks older than 30 days and
 form.onsubmit=async e=>{e.preventDefault();const d=new FormData(form),key=editing||d.get('provider_key'),payload={provider_key:key,display_name:d.get('display_name'),kind:d.get('kind'),poll_interval_seconds:Number(d.get('poll_interval_seconds')),symbols:String(d.get('symbols')).split(',').map(x=>x.trim()).filter(Boolean),terminal_path:d.get('terminal_path')||null,priority:Number(d.get('priority')),fallback_after_seconds:Number(d.get('fallback_after_seconds')),batch_window_seconds:Number(d.get('batch_window_seconds')),batch_limit:Number(d.get('batch_limit')),maintenance_enabled:form.elements.maintenance_enabled.checked,maintenance_interval_minutes:Number(d.get('maintenance_interval_minutes')),maintenance_backfill_days:Number(d.get('maintenance_backfill_days')),enabled:form.elements.enabled.checked,auto_start:form.elements.auto_start.checked};const r=await fetch('/api/providers/'+encodeURIComponent(key),{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});if(!r.ok){error.textContent=(await r.json()).detail||r.statusText;return}editor.close();load()};load();loadEvents();setInterval(()=>{load();loadEvents()},3000);
 </script></body></html>'''
 
-app = create_app()
+app = create_app(database_path=os.getenv("AXETOS_DATABASE_URL", "data/market_data.sqlite"))

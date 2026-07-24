@@ -63,11 +63,12 @@ def build_metrics(store: Any, supervisor: Any, started_utc: datetime) -> dict[st
     statistics = store.statistics()
     providers = supervisor.list_views()
     runtime = [p["runtime"] for p in providers]
-    database_path = Path(store.database_path)
+    database_path = Path(store.database_path) if store.database_path is not None else None
     return {
         "generated_utc": now.isoformat(),
         "uptime_seconds": max(0.0, (now - started_utc).total_seconds()),
-        "database_size_bytes": database_path.stat().st_size if database_path.exists() else 0,
+        "database_size_bytes": database_path.stat().st_size if database_path is not None and database_path.exists() else 0,
+        "database_backend": store.backend.kind,
         "ticks_stored": statistics["ticks"],
         "candles_stored": statistics["candles"],
         "instruments_stored": statistics["instruments"],

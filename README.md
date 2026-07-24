@@ -4,7 +4,7 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P\&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.4.0
+## Version 0.5.0
 
 Version 0.5.0 adds provider priority and controlled fallback. One provider is selected as the authoritative source for each instrument, while lower-priority providers remain available as monitored standby sources. If the active provider becomes stale, routing can move to the next eligible provider without blending conflicting feeds.
 
@@ -69,15 +69,15 @@ The server is intentionally separated from any trading platform. A trading platf
 
 ```powershell
 python -m venv .venv
-.venv\\Scripts\\Activate.ps1
+.venv\\\\Scripts\\\\Activate.ps1
 python -m pip install --upgrade pip
-pip install -e ".\[dev]"
+pip install -e ".\\\[dev]"
 ```
 
 For MetaTrader 5 support:
 
 ```powershell
-pip install -e ".\[dev,mt5]"
+pip install -e ".\\\[dev,mt5]"
 ```
 
 ## Run the server
@@ -89,7 +89,7 @@ axetos-market-data-server
 Or:
 
 ```powershell
-python -m axetos\_market\_data.server --host 127.0.0.1 --port 8000
+python -m axetos\\\_market\\\_data.server --host 127.0.0.1 --port 8000
 ```
 
 Open:
@@ -101,7 +101,7 @@ Open:
 The default files are created under `data/`:
 
 ```text
-data/market\_data.sqlite
+data/market\\\_data.sqlite
 data/providers.json
 ```
 
@@ -116,9 +116,9 @@ The web UI shows database statistics and the live state of each configured provi
 |`GET`|`/api/health`|Server health and version|
 |`GET`|`/api/statistics`|Database statistics|
 |`GET`|`/api/providers`|Provider configurations and runtime state|
-|`PUT`|`/api/providers/{provider\_key}`|Add or update a provider|
-|`POST`|`/api/providers/{provider\_key}/{action}`|Start, stop, restart, enable, or disable|
-|`DELETE`|`/api/providers/{provider\_key}`|Remove a provider; historical data remains|
+|`PUT`|`/api/providers/{provider\\\_key}`|Add or update a provider|
+|`POST`|`/api/providers/{provider\\\_key}/{action}`|Start, stop, restart, enable, or disable|
+|`DELETE`|`/api/providers/{provider\\\_key}`|Remove a provider; historical data remains|
 |`POST`|`/api/backfill`|Import MT5 historical candles and detect gaps|
 |`GET`|`/api/backfill/state`|Inspect persisted backfill results and failures|
 |`GET`|`/api/gaps`|Query unresolved gaps with optional filters|
@@ -131,7 +131,7 @@ The web UI shows database statistics and the live state of each configured provi
 Example candle query:
 
 ```text
-/api/candles?instrument=EUR%2FUSD\&timeframe=1m\&limit=200
+/api/candles?instrument=EUR%2FUSD\\\&timeframe=1m\\\&limit=200
 ```
 
 ## Command-line collector

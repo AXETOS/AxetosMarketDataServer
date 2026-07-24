@@ -47,6 +47,35 @@ class MetaTrader5TickProvider:
         if not ok:
             raise RuntimeError(f"MetaTrader5 initialization failed: {mt5.last_error()}")
 
+    def test_connection(self) -> dict[str, object]:
+        mt5 = self._module()
+        self._initialize(mt5)
+        try:
+            terminal = mt5.terminal_info()
+            account = mt5.account_info()
+            symbols: list[dict[str, object]] = []
+            for symbol in self.symbols:
+                selected = bool(mt5.symbol_select(symbol, True))
+                info = mt5.symbol_info(symbol) if selected else None
+                tick = mt5.symbol_info_tick(symbol) if selected else None
+                symbols.append({
+                    "symbol": symbol,
+                    "selected": selected,
+                    "visible": bool(getattr(info, "visible", False)) if info else False,
+                    "digits": getattr(info, "digits", None) if info else None,
+                    "has_tick": tick is not None,
+                })
+            return {
+                "ok": all(item["selected"] for item in symbols),
+                "terminal_connected": bool(getattr(terminal, "connected", False)) if terminal else False,
+                "terminal_name": getattr(terminal, "name", None) if terminal else None,
+                "account_login": getattr(account, "login", None) if account else None,
+                "server": getattr(account, "server", None) if account else None,
+                "symbols": symbols,
+            }
+        finally:
+            mt5.shutdown()
+
     def stream(self) -> Iterator[Tick]:
         """Continuously retrieve MT5 ticks in batches.
 

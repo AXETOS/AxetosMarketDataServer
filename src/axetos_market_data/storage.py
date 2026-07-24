@@ -95,6 +95,21 @@ CREATE TABLE IF NOT EXISTS cleanup_runs (
 );
 CREATE INDEX IF NOT EXISTS ix_cleanup_runs_created ON cleanup_runs(created_utc);
 
+
+CREATE TABLE IF NOT EXISTS symbol_policies (
+ provider_key TEXT NOT NULL,
+ provider_symbol TEXT NOT NULL,
+ canonical_instrument TEXT NOT NULL,
+ enabled INTEGER NOT NULL DEFAULT 1,
+ allow_live INTEGER NOT NULL DEFAULT 1,
+ allow_history INTEGER NOT NULL DEFAULT 1,
+ priority_override INTEGER NULL,
+ updated_utc TEXT NOT NULL,
+ PRIMARY KEY(provider_key, provider_symbol)
+);
+CREATE INDEX IF NOT EXISTS ix_symbol_policies_canonical
+ON symbol_policies(canonical_instrument, enabled);
+
 CREATE TABLE IF NOT EXISTS mt5_bridge_heartbeats (
  provider_key TEXT NOT NULL, terminal_instance_id TEXT NOT NULL, broker_name TEXT NULL,
  server_name TEXT NULL, account_login INTEGER NULL, source_time_utc TEXT NOT NULL,
@@ -510,3 +525,41 @@ class MarketDataStore:
             selected=c.execute('SELECT COUNT(*) FROM mt5_bridge_instruments WHERE is_selected=1').fetchone()[0]
             quotes=c.execute('SELECT COUNT(*) FROM mt5_bridge_quotes').fetchone()[0]
         return {'heartbeats':heart,'discovered_instruments':instruments,'selected_instruments':selected,'live_quotes':quotes}
+
+
+    def upsert_symbol_policy(self, provider_key: str, provider_symbol: str, canonical_instrument: str,
+                             enabled: bool = True, allow_live: bool = True, allow_history: bool = True,
+                             priority_override: int | None = None) -> dict[str, object]:
+        now = _iso(datetime.now().astimezone())
+        with self.connect() as connection:
+            connection.execute("""INSERT INTO symbol_policies(provider_key,provider_symbol,canonical_instrument,enabled,allow_live,allow_history,priority_override,updated_utc)
+            VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(provider_key,provider_symbol) DO UPDATE SET
+            canonical_instrument=excluded.canonical_instrument,enabled=excluded.enabled,allow_live=excluded.allow_live,
+            allow_history=excluded.allow_history,priority_override=excluded.priority_override,updated_utc=excluded.updated_utc""",
+            (provider_key,provider_symbol,canonical_instrument,int(enabled),int(allow_live),int(allow_history),priority_override,now))
+        return self.get_symbol_policy(provider_key, provider_symbol) or {}
+
+    def get_symbol_policy(self, provider_key: str, provider_symbol: str) -> dict[str, object] | None:
+        with self.connect() as connection:
+            row=connection.execute("SELECT * FROM symbol_policies WHERE provider_key=? AND provider_symbol=?",(provider_key,provider_symbol)).fetchone()
+        return None if row is None else self._policy_dict(row)
+
+    def list_symbol_policies(self, provider_key: str | None = None, instrument: str | None = None) -> list[dict[str, object]]:
+        where=[]; params=[]
+        if provider_key is not None: where.append("provider_key=?"); params.append(provider_key)
+        if instrument is not None: where.append("canonical_instrument=?"); params.append(instrument)
+        sql="SELECT * FROM symbol_policies"+(" WHERE "+" AND ".join(where) if where else "")+" ORDER BY canonical_instrument,provider_key,provider_symbol"
+        with self.connect() as connection: rows=connection.execute(sql,params).fetchall()
+        return [self._policy_dict(row) for row in rows]
+
+    def delete_symbol_policy(self, provider_key: str, provider_symbol: str) -> bool:
+        with self.connect() as connection:
+            before=connection.total_changes
+            connection.execute("DELETE FROM symbol_policies WHERE provider_key=? AND provider_symbol=?",(provider_key,provider_symbol))
+            return connection.total_changes>before
+
+    @staticmethod
+    def _policy_dict(row: sqlite3.Row) -> dict[str, object]:
+        value=dict(row)
+        for key in ("enabled","allow_live","allow_history"): value[key]=bool(value[key])
+        return value

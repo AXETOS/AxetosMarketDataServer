@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.9.0
+## Version 0.10.0
 
-Version 0.9.0 adds compatibility with the original Axetos MT5 bridge contract, including terminal heartbeats, instrument discovery, live quote snapshots, queued tick batches, source-candle ingestion, instrument selection, and bridge diagnostics.
+Version 0.10.0 adds persistent symbol policies, deterministic canonical-source selection, and provider connection testing. Provider symbols can be enabled independently for live and historical collection, assigned canonical instruments, and given priority overrides without blending feeds.
 
 ## Operational diagnostics
 

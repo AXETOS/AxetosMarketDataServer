@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.20.0
+## Version 0.21.0
 
-Version 0.20.0 adds a database-backend abstraction and optional PostgreSQL storage. SQLite remains the default for local development and compact deployments, while PostgreSQL can be selected with `AXETOS_DATABASE_URL` for installations that need a dedicated database server and more concurrent consumers.
+Version 0.21.0 removes manual symbol entry from MT5 provider setup. MT5 providers are now created without implicit symbols, and broker instruments are selected only through the managed symbol-discovery and canonical-mapping workflow. This prevents canonical names such as `EUR/USD` from being passed accidentally to MT5 where the broker expects a symbol such as `EURUSD.pro`.
 
 ## Storage backends
 

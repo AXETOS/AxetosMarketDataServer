@@ -25,7 +25,11 @@ class ProviderConfig:
     maintenance_backfill_days: int = 2
 
     def normalized_symbols(self) -> list[str]:
-        return self.symbols or ["EUR/USD"]
+        # MT5 symbols must be selected through the managed symbol workflow.
+        # Other provider types retain the original default for compatibility.
+        if self.symbols:
+            return self.symbols
+        return [] if self.kind.lower() == "mt5" else ["EUR/USD"]
 
 
 class ConfigurationStore:

@@ -15,6 +15,8 @@ class ProviderConfig:
     poll_interval_seconds: float = 1.0
     symbols: list[str] | None = None
     terminal_path: str | None = None
+    priority: int = 100
+    fallback_after_seconds: float = 10.0
 
     def normalized_symbols(self) -> list[str]:
         return self.symbols or ["EUR/USD"]

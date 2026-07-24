@@ -170,3 +170,23 @@ The test suite covers candle creation, storage, provider configuration, historic
 ## License
 
 MIT License. See [LICENSE](LICENSE).
+
+## Provider priority and controlled fallback (v0.5.0)
+
+Each provider has an explicit numeric priority (lower values win) and a freshness threshold. The server chooses exactly one authoritative source for each instrument. A lower-priority provider remains on standby and is selected only when every higher-priority source is stale or unavailable.
+
+Incoming ticks from standby feeds are counted for operational visibility but are not blended into the authoritative tick and candle stream. Provider provenance remains attached to every stored record.
+
+The current routing decision can be inspected in the control center or through:
+
+```text
+GET /api/routing
+```
+
+A typical configuration is:
+
+```text
+ICMarkets.MT5  priority 10  primary
+Oanda.MT5      priority 20  secondary
+Fallback       priority 90  last resort
+```

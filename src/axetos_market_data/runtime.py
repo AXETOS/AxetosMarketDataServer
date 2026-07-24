@@ -10,6 +10,7 @@ from .config import ConfigurationStore, ProviderConfig
 from .providers.mock import MockTickProvider
 from .providers.mt5 import MetaTrader5TickProvider
 from .service import MarketDataService
+from .routing import ProviderAuthorityRegistry
 from .storage import MarketDataStore
 
 
@@ -22,12 +23,15 @@ class ProviderRuntime:
     last_tick_utc: str | None = None
     ticks_received: int = 0
     last_error: str | None = None
+    authoritative_ticks: int = 0
+    standby_ticks: int = 0
 
 
 class ProviderWorker:
-    def __init__(self, config: ProviderConfig, store: MarketDataStore) -> None:
+    def __init__(self, config: ProviderConfig, store: MarketDataStore, authority: ProviderAuthorityRegistry) -> None:
         self.config = config
         self.store = store
+        self.authority = authority
         self.runtime = ProviderRuntime(provider_key=config.provider_key)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -63,7 +67,12 @@ class ProviderWorker:
             for tick in provider.stream():
                 if self._stop.is_set():
                     break
-                service.run([tick])
+                self.authority.record_tick(self.config.provider_key, tick.instrument, tick.timestamp)
+                if self.authority.is_authoritative(self.config.provider_key, tick.instrument, tick.timestamp):
+                    service.run([tick])
+                    self.runtime.authoritative_ticks += 1
+                else:
+                    self.runtime.standby_ticks += 1
                 now = datetime.now(UTC).isoformat()
                 self.runtime.last_heartbeat_utc = now
                 self.runtime.last_tick_utc = tick.timestamp.isoformat()
@@ -86,12 +95,15 @@ class ProviderSupervisor:
         self.config_store = config_store
         self.data_store = data_store
         self._workers: dict[str, ProviderWorker] = {}
+        self.authority = ProviderAuthorityRegistry()
         self._lock = threading.RLock()
 
     def load(self) -> None:
         with self._lock:
-            for config in self.config_store.read_all():
-                self._workers[config.provider_key] = ProviderWorker(config, self.data_store)
+            configs = self.config_store.read_all()
+            self.authority.replace_configs(configs)
+            for config in configs:
+                self._workers[config.provider_key] = ProviderWorker(config, self.data_store, self.authority)
                 if config.enabled and config.auto_start:
                     self._workers[config.provider_key].start()
 
@@ -114,7 +126,8 @@ class ProviderSupervisor:
             if existing:
                 existing.stop()
             self.config_store.upsert(config)
-            worker = ProviderWorker(config, self.data_store)
+            self.authority.replace_configs(self.config_store.read_all())
+            worker = ProviderWorker(config, self.data_store, self.authority)
             self._workers[config.provider_key] = worker
             if config.enabled and config.auto_start:
                 worker.start()
@@ -132,10 +145,12 @@ class ProviderSupervisor:
         elif action == "enable":
             worker.config.enabled = True
             self.config_store.upsert(worker.config)
+            self.authority.replace_configs(self.config_store.read_all())
             worker.start()
         elif action == "disable":
             worker.config.enabled = False
             self.config_store.upsert(worker.config)
+            self.authority.replace_configs(self.config_store.read_all())
             worker.stop()
         else:
             raise ValueError(f"Unsupported action: {action}")
@@ -147,4 +162,6 @@ class ProviderSupervisor:
             worker = self._workers.pop(provider_key, None)
             if worker:
                 worker.stop()
-            return self.config_store.delete(provider_key)
+            removed = self.config_store.delete(provider_key)
+            self.authority.replace_configs(self.config_store.read_all())
+            return removed

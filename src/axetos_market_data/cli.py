@@ -8,6 +8,7 @@ from .providers.mt5 import MetaTrader5TickProvider
 from .service import MarketDataService
 from .storage import MarketDataStore
 from .backups import BackupError, BackupService
+from .benchmarks import IngestionBenchmark, write_benchmark_result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +42,13 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("archive")
     restore.add_argument("--configuration", default="data/providers.json")
     restore.add_argument("--overwrite", action="store_true")
+
+    benchmark = subparsers.add_parser("benchmark", help="Run a deterministic ingestion benchmark.")
+    benchmark.add_argument("--ticks", type=int, default=100_000)
+    benchmark.add_argument("--instruments", type=int, default=10)
+    benchmark.add_argument("--batch-size", type=int, default=1_000)
+    benchmark.add_argument("--output")
+    benchmark.add_argument("--keep-database", action="store_true")
     return parser
 
 
@@ -50,6 +58,17 @@ def main() -> None:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    if args.command == "benchmark":
+        database = args.database if args.keep_database else None
+        result = IngestionBenchmark(
+            ticks=args.ticks,
+            instruments=args.instruments,
+            batch_size=args.batch_size,
+            database=database,
+        ).run()
+        write_benchmark_result(result, args.output)
+        return
+
     if args.command in {"backup", "verify-backup", "restore"}:
         service = BackupService(
             args.database,

@@ -13,7 +13,7 @@ from axetos_market_data.web import create_app
 
 
 def test_version_and_stream_status(tmp_path):
-    assert __version__ == "0.28.0"
+    assert __version__ == "0.29.0"
     app = create_app(tmp_path / "data.sqlite", tmp_path / "providers.json")
     with TestClient(app) as client:
         response = client.get("/api/stream/status")

@@ -4,9 +4,26 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.17.0
+## Version 0.18.0
 
-Version 0.17.0 adds persistent scheduled retention and maintenance. Retention schedules are stored in SQLite, survive restarts, execute automatically in a background scheduler, and retain run status, results, errors, last-run time, and next-run time. Operators can create or update schedules, trigger them immediately, and inspect execution history through the management API.
+Version 0.18.0 adds a live Server-Sent Events consumer API for ticks and candle updates. Trading-platform clients can subscribe without polling SQLite, filter by provider or canonical instrument, and monitor subscriber, publication, and dropped-event counters. Per-client queues are bounded so slow consumers cannot block market-data ingestion.
+
+## Live consumer stream
+
+Trading-platform clients can consume live normalized ticks and stored candle updates through Server-Sent Events:
+
+```text
+GET /api/stream/live
+GET /api/stream/status
+```
+
+Optional repeated query parameters filter the stream:
+
+```text
+/api/stream/live?instrument=EUR%2FUSD&provider=ICMarkets.MT5&event_type=tick&event_type=candle
+```
+
+The stream emits `ready`, `tick`, and `candle` event types and sends heartbeat comments during quiet periods. When authentication is enabled, a Viewer, Operator, or Administrator management token is required. The endpoint is intended for live display and downstream notification; SQLite remains the authoritative durable history.
 
 ## Operational diagnostics
 
@@ -28,6 +45,8 @@ GET /metrics
 - Persistent scheduled retention with automatic execution and run history
 - Maintenance status and manual trigger in the management UI
 
+- Live SSE tick and candle stream with provider/instrument filtering
+- Bounded subscriber queues and stream health counters
 - Continuous provider supervision in background worker threads
 - Built-in deterministic mock provider for local development
 - Optional direct MetaTrader 5 provider

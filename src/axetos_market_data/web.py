@@ -4,11 +4,12 @@ import csv
 import io
 import json
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import ConfigurationStore, ProviderConfig
@@ -28,6 +29,7 @@ from .quality import CandleQualityService
 from .operational import OperationalEventService
 from .symbols import SymbolResolver, normalize_instrument
 from .security import SecuritySettings, install_security_middleware
+from .streaming import LiveStreamHub, StreamFilter
 from .bridge import (Mt5BridgeService, BridgeHeartbeatRequest, BridgeInstrumentsRequest, BridgeTicksRequest, BridgeQuotesRequest, BridgeCandlesRequest, InstrumentSelectionRequest)
 
 
@@ -113,6 +115,8 @@ def create_app(
 ) -> FastAPI:
     store = MarketDataStore(database_path)
     store.initialize()
+    stream_hub = LiveStreamHub()
+    store.set_live_publishers(stream_hub.publish_tick, stream_hub.publish_candle)
     config_store = ConfigurationStore(configuration_path)
     supervisor = ProviderSupervisor(config_store, store)
     scheduler = MaintenanceScheduler(store)
@@ -149,6 +153,51 @@ def create_app(
     app.state.events = events
     app.state.calendar = calendar
     app.state.scheduler = scheduler
+    app.state.stream_hub = stream_hub
+
+    @app.get("/api/stream/status")
+    def stream_status() -> dict[str, int]:
+        return stream_hub.status()
+
+    @app.get("/api/stream/live")
+    async def live_stream(
+        request: Request,
+        instrument: list[str] = Query(default=[]),
+        provider: list[str] = Query(default=[]),
+        event_type: list[str] = Query(default=["tick", "candle"]),
+    ) -> StreamingResponse:
+        allowed_types = frozenset(value.lower() for value in event_type)
+        if not allowed_types or not allowed_types.issubset({"tick", "candle"}):
+            raise HTTPException(400, "event_type must contain tick and/or candle")
+        stream_filter = StreamFilter(
+            instruments=frozenset(value.strip() for value in instrument if value.strip()),
+            providers=frozenset(value.strip() for value in provider if value.strip()),
+            event_types=allowed_types,
+        )
+
+        async def generate():
+            yield "retry: 2000\nevent: ready\ndata: {\"status\":\"connected\"}\n\n"
+            iterator = stream_hub.subscribe(stream_filter).__aiter__()
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(iterator.__anext__(), timeout=15.0)
+                    yield stream_hub.sse(event)
+                except TimeoutError:
+                    yield f": heartbeat {datetime.now(UTC).isoformat()}\n\n"
+                except StopAsyncIteration:
+                    break
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def dashboard() -> str:

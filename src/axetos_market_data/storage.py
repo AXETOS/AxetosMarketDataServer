@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from .domain import Candle, Tick
 
@@ -223,6 +223,16 @@ class MarketDataStore:
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = Path(database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self._tick_publisher: Callable[[Tick], None] | None = None
+        self._candle_publisher: Callable[[Candle], None] | None = None
+
+    def set_live_publishers(
+        self,
+        tick_publisher: Callable[[Tick], None] | None,
+        candle_publisher: Callable[[Candle], None] | None,
+    ) -> None:
+        self._tick_publisher = tick_publisher
+        self._candle_publisher = candle_publisher
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -334,6 +344,7 @@ class MarketDataStore:
             return connection.total_changes - before
 
     def insert_ticks(self, ticks: Iterable[Tick]) -> int:
+        tick_list = list(ticks)
         rows = [
             (
                 tick.provider,
@@ -343,7 +354,7 @@ class MarketDataStore:
                 str(tick.ask),
                 None if tick.volume is None else str(tick.volume),
             )
-            for tick in ticks
+            for tick in tick_list
         ]
         if not rows:
             return 0
@@ -356,7 +367,11 @@ class MarketDataStore:
                 """,
                 rows,
             )
-            return connection.total_changes - before
+            written = connection.total_changes - before
+        if self._tick_publisher is not None:
+            for tick in tick_list:
+                self._tick_publisher(tick)
+        return written
 
     def upsert_candle(self, candle: Candle) -> None:
         with self.connect() as connection:
@@ -390,6 +405,8 @@ class MarketDataStore:
                     int(candle.complete),
                 ),
             )
+        if self._candle_publisher is not None:
+            self._candle_publisher(candle)
 
 
     def upsert_candles(self, candles: Iterable[Candle]) -> int:

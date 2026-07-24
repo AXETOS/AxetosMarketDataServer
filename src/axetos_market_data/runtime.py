@@ -5,6 +5,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from .config import ConfigurationStore, ProviderConfig
 from .feed import FeedStateEngine, FeedThresholds
@@ -49,6 +50,20 @@ class ProviderWorker:
         self.feed = FeedStateEngine(FeedThresholds(
             config.feed_quiet_seconds, config.feed_stalled_seconds, config.feed_inactive_seconds,
         ))
+        resolver = SymbolResolver(store)
+        for provider_symbol in config.normalized_symbols():
+            instrument = resolver.resolve(config.provider_key, provider_symbol).canonical_instrument
+            latest = store.latest_tick_for(config.provider_key, instrument)
+            timestamp = None
+            bid = ask = market_price = None
+            if latest is not None:
+                timestamp = datetime.fromisoformat(str(latest["timestamp_utc"]))
+                if timestamp.tzinfo is None:
+                    timestamp = timestamp.replace(tzinfo=UTC)
+                bid = Decimal(str(latest["bid"]))
+                ask = Decimal(str(latest["ask"]))
+                market_price = (bid + ask) / Decimal("2")
+            self.feed.seed_inactive(config.provider_key, instrument, timestamp, market_price, bid, ask)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():

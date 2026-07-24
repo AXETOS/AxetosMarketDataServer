@@ -624,6 +624,15 @@ class MarketDataStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+
+    def latest_tick_for(self, provider: str, instrument: str) -> dict[str, object] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT provider,instrument,timestamp_utc,bid,ask FROM ticks WHERE provider=? AND instrument=? ORDER BY timestamp_utc DESC,id DESC LIMIT 1",
+                (provider, instrument),
+            ).fetchone()
+        return None if row is None else dict(row)
+
     def statistics(self) -> dict[str, object]:
         with self.connect() as connection:
             ticks = int(connection.execute("SELECT COUNT(*) FROM ticks").fetchone()[0])

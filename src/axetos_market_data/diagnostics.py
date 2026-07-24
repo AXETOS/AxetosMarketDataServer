@@ -33,7 +33,7 @@ def build_health(store: Any, supervisor: Any, version: str) -> dict[str, object]
         config = provider["configuration"]
         last = _parse_utc(runtime.get("last_heartbeat_utc"))
         threshold = max(float(config.get("fallback_after_seconds", 10.0)) * 2.0, 15.0)
-        if last is None or (now - last).total_seconds() > threshold:
+        if last is not None and (now - last).total_seconds() > threshold:
             stale.append(str(config["provider_key"]))
 
     status = "healthy"

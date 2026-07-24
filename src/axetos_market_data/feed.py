@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from threading import RLock
 
@@ -56,6 +56,31 @@ class FeedStateEngine:
         self.thresholds = thresholds or FeedThresholds()
         self._items: dict[tuple[str, str], FeedObservation] = {}
         self._lock = RLock()
+
+    def seed_inactive(
+        self,
+        provider: str,
+        instrument: str,
+        last_price_change_utc: datetime | None = None,
+        market_price: Decimal | None = None,
+        bid: Decimal | None = None,
+        ask: Decimal | None = None,
+    ) -> None:
+        """Restore a known configured feed as inactive while monitoring continues."""
+        with self._lock:
+            key = (provider, instrument)
+            if key in self._items:
+                return
+            reference_time = last_price_change_utc or (datetime.now(UTC) - timedelta(seconds=self.thresholds.inactive_seconds))
+            self._items[key] = FeedObservation(
+                provider=provider,
+                instrument=instrument,
+                state="INACTIVE",
+                last_price_change_utc=reference_time,
+                last_bid=bid,
+                last_ask=ask,
+                last_market_price=market_price,
+            )
 
     def observe(self, tick: Tick) -> FeedDecision:
         key = (tick.provider, tick.instrument)

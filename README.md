@@ -4,9 +4,11 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.27.0
+## Version 0.28.0
 
-Version 0.27.0 makes feed activity and live candle construction use one normalized reference market price. For spot FX and CFDs without a reliable last-trade price, the server uses the bid/ask midpoint normalized to the broker quote precision. Bid and ask remain available for spread and execution display, but spread-only flicker no longer keeps a feed falsely LIVE or creates artificial candle movement.
+Version 0.28.0 separates infrastructure health, provider connectivity, and market-feed activity. Connected providers now keep system health healthy during closed or inactive markets, configured feed state restores as INACTIVE after restart, and the management UI labels an operational MT5 worker as Connected rather than Live.
+
+Version 0.28.0 makes feed activity and live candle construction use one normalized reference market price. For spot FX and CFDs without a reliable last-trade price, the server uses the bid/ask midpoint normalized to the broker quote precision. Bid and ask remain available for spread and execution display, but spread-only flicker no longer keeps a feed falsely LIVE or creates artificial candle movement.
 
 ## Feed-derived market status and candle continuity
 

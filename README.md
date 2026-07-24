@@ -2,33 +2,33 @@
 
 A standalone Python market-data server for collecting financial market ticks, building OHLC candles, aggregating timeframes, validating historical data, and storing the result in SQLite.
 
-This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
+This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P\&L, strategies, chart renderer, or client trading interface.
 
 ## Version 0.4.0
 
-Version 0.4.0 adds a complete candle-gap repair cycle. Unresolved gaps can be filtered by provider, instrument, and timeframe, grouped into contiguous request windows, fetched again from MetaTrader 5, validated, persisted, marked resolved only when the expected candle exists, and recorded in a repair audit history.
+Version 0.5.0 adds provider priority and controlled fallback. One provider is selected as the authoritative source for each instrument, while lower-priority providers remain available as monitored standby sources. If the active provider becomes stale, routing can move to the next eligible provider without blending conflicting feeds.
 
 ## Current capabilities
 
-- Continuous provider supervision in background worker threads
-- Built-in deterministic mock provider for local development
-- Optional direct MetaTrader 5 provider
-- Raw tick persistence with duplicate protection
-- Deterministic UTC one-minute OHLC candle construction
-- Higher-timeframe candle aggregation
-- Historical MT5 candle backfill
-- Persistent backfill status and failure details
-- Weekday candle-gap detection
-- Targeted gap rescanning
-- Automatic repair of unresolved MT5 gaps
-- Contiguous gap grouping to reduce provider requests
-- Repair-run audit history
-- SQLite storage with WAL mode and indexed lookup paths
-- Provider configuration persisted in JSON
-- Browser-based provider control center
-- REST endpoints and OpenAPI documentation
-- Graceful shutdown with active candles stored as incomplete
-- Automated tests through GitHub Actions
+* Continuous provider supervision in background worker threads
+* Built-in deterministic mock provider for local development
+* Optional direct MetaTrader 5 provider
+* Raw tick persistence with duplicate protection
+* Deterministic UTC one-minute OHLC candle construction
+* Higher-timeframe candle aggregation
+* Historical MT5 candle backfill
+* Persistent backfill status and failure details
+* Weekday candle-gap detection
+* Targeted gap rescanning
+* Automatic repair of unresolved MT5 gaps
+* Contiguous gap grouping to reduce provider requests
+* Repair-run audit history
+* SQLite storage with WAL mode and indexed lookup paths
+* Provider configuration persisted in JSON
+* Browser-based provider control center
+* REST endpoints and OpenAPI documentation
+* Graceful shutdown with active candles stored as incomplete
+* Automated tests through GitHub Actions
 
 ## Architecture
 
@@ -62,22 +62,22 @@ The server is intentionally separated from any trading platform. A trading platf
 
 ## Requirements
 
-- Python 3.11 or newer
-- MetaTrader 5 terminal and the `MetaTrader5` Python package only when using an MT5 provider
+* Python 3.11 or newer
+* MetaTrader 5 terminal and the `MetaTrader5` Python package only when using an MT5 provider
 
 ## Installation
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\Activate.ps1
+.venv\\Scripts\\Activate.ps1
 python -m pip install --upgrade pip
-pip install -e ".[dev]"
+pip install -e ".\[dev]"
 ```
 
 For MetaTrader 5 support:
 
 ```powershell
-pip install -e ".[dev,mt5]"
+pip install -e ".\[dev,mt5]"
 ```
 
 ## Run the server
@@ -89,19 +89,19 @@ axetos-market-data-server
 Or:
 
 ```powershell
-python -m axetos_market_data.server --host 127.0.0.1 --port 8000
+python -m axetos\_market\_data.server --host 127.0.0.1 --port 8000
 ```
 
 Open:
 
-- Control center: `http://127.0.0.1:8000/`
-- OpenAPI documentation: `http://127.0.0.1:8000/docs`
-- Health endpoint: `http://127.0.0.1:8000/api/health`
+* Control center: `http://127.0.0.1:8000/`
+* OpenAPI documentation: `http://127.0.0.1:8000/docs`
+* Health endpoint: `http://127.0.0.1:8000/api/health`
 
 The default files are created under `data/`:
 
 ```text
-data/market_data.sqlite
+data/market\_data.sqlite
 data/providers.json
 ```
 
@@ -111,27 +111,27 @@ The web UI shows database statistics and the live state of each configured provi
 
 ## REST endpoints
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `GET` | `/api/health` | Server health and version |
-| `GET` | `/api/statistics` | Database statistics |
-| `GET` | `/api/providers` | Provider configurations and runtime state |
-| `PUT` | `/api/providers/{provider_key}` | Add or update a provider |
-| `POST` | `/api/providers/{provider_key}/{action}` | Start, stop, restart, enable, or disable |
-| `DELETE` | `/api/providers/{provider_key}` | Remove a provider; historical data remains |
-| `POST` | `/api/backfill` | Import MT5 historical candles and detect gaps |
-| `GET` | `/api/backfill/state` | Inspect persisted backfill results and failures |
-| `GET` | `/api/gaps` | Query unresolved gaps with optional filters |
-| `POST` | `/api/gaps/scan` | Rescan a provider/instrument/timeframe window |
-| `POST` | `/api/gaps/repair` | Repair unresolved gaps from MT5 history |
-| `GET` | `/api/gaps/repairs` | Inspect repair-run audit history |
-| `GET` | `/api/instruments` | List instruments currently stored |
-| `GET` | `/api/candles` | Query stored candles |
+|Method|Endpoint|Purpose|
+|-|-|-|
+|`GET`|`/api/health`|Server health and version|
+|`GET`|`/api/statistics`|Database statistics|
+|`GET`|`/api/providers`|Provider configurations and runtime state|
+|`PUT`|`/api/providers/{provider\_key}`|Add or update a provider|
+|`POST`|`/api/providers/{provider\_key}/{action}`|Start, stop, restart, enable, or disable|
+|`DELETE`|`/api/providers/{provider\_key}`|Remove a provider; historical data remains|
+|`POST`|`/api/backfill`|Import MT5 historical candles and detect gaps|
+|`GET`|`/api/backfill/state`|Inspect persisted backfill results and failures|
+|`GET`|`/api/gaps`|Query unresolved gaps with optional filters|
+|`POST`|`/api/gaps/scan`|Rescan a provider/instrument/timeframe window|
+|`POST`|`/api/gaps/repair`|Repair unresolved gaps from MT5 history|
+|`GET`|`/api/gaps/repairs`|Inspect repair-run audit history|
+|`GET`|`/api/instruments`|List instruments currently stored|
+|`GET`|`/api/candles`|Query stored candles|
 
 Example candle query:
 
 ```text
-/api/candles?instrument=EUR%2FUSD&timeframe=1m&limit=200
+/api/candles?instrument=EUR%2FUSD\&timeframe=1m\&limit=200
 ```
 
 ## Command-line collector
@@ -160,12 +160,12 @@ The test suite covers candle creation, storage, provider configuration, historic
 
 ## Roadmap
 
-- Explicit provider priority and fallback policy
-- Richer symbol alias mapping
-- Automated scheduled backfill and repair jobs
-- Market-session calendars and holiday awareness
-- Data-quality diagnostics and operational log export
-- PostgreSQL storage option
+* Explicit provider priority and fallback policy
+* Richer symbol alias mapping
+* Automated scheduled backfill and repair jobs
+* Market-session calendars and holiday awareness
+* Data-quality diagnostics and operational log export
+* PostgreSQL storage option
 
 ## License
 
@@ -190,3 +190,4 @@ ICMarkets.MT5  priority 10  primary
 Oanda.MT5      priority 20  secondary
 Fallback       priority 90  last resort
 ```
+

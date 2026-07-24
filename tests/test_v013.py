@@ -2,14 +2,9 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
-from axetos_market_data import __version__
 from axetos_market_data.operational import OperationalEventService
 from axetos_market_data.storage import MarketDataStore
 from axetos_market_data.web import create_app
-
-
-def test_version_013():
-    assert __version__ == "0.13.0"
 
 
 def test_operational_event_persistence_filtering_and_pagination(tmp_path):

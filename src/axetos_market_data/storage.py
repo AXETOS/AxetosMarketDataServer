@@ -252,6 +252,48 @@ class MarketDataStore:
         return {"page": page, "page_size": page_size, "total": total,
                 "pages": (total + page_size - 1) // page_size, "items": items}
 
+    def export_operational_events(self, *, severity: str | None = None,
+                                  category: str | None = None, provider: str | None = None,
+                                  instrument: str | None = None, search: str | None = None,
+                                  from_utc: datetime | None = None, to_utc: datetime | None = None,
+                                  limit: int = 50000) -> list[dict[str, object]]:
+        import json
+        limit = max(1, min(100000, int(limit)))
+        where = ["1=1"]
+        args: list[object] = []
+        for column, value in (("severity", severity), ("category", category),
+                              ("provider", provider), ("instrument", instrument)):
+            if value:
+                where.append(f"{column}=?")
+                args.append(value)
+        if search:
+            where.append("(message LIKE ? OR details_json LIKE ?)")
+            token = f"%{search}%"
+            args.extend((token, token))
+        if from_utc:
+            where.append("timestamp_utc>=?")
+            args.append(_iso(from_utc))
+        if to_utc:
+            where.append("timestamp_utc<=?")
+            args.append(_iso(to_utc))
+        clause = " AND ".join(where)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM operational_events WHERE {clause} "
+                "ORDER BY timestamp_utc DESC,id DESC LIMIT ?",
+                [*args, limit],
+            ).fetchall()
+        items: list[dict[str, object]] = []
+        for row in rows:
+            item = dict(row)
+            raw_details = str(item.pop("details_json"))
+            try:
+                item["details"] = json.loads(raw_details)
+            except json.JSONDecodeError:
+                item["details"] = {"raw": raw_details}
+            items.append(item)
+        return items
+
     def delete_operational_events_before(self, cutoff: datetime) -> int:
         with self.connect() as connection:
             before = connection.total_changes

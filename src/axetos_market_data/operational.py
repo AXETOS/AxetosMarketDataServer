@@ -55,3 +55,6 @@ class OperationalEventService:
 
     def list(self, **filters: object) -> dict[str, object]:
         return self.store.list_operational_events(**filters)
+
+    def export(self, **filters: object) -> list[dict[str, object]]:
+        return self.store.export_operational_events(**filters)

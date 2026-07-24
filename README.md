@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.13.0
+## Version 0.14.0
 
-Version 0.13.0 adds a persistent structured operational event journal. Provider lifecycle and connection tests, historical backfills, gap and repair workflows, candle-quality scans, quarantine and rebuild actions, retention cleanup, and database integrity checks now produce queryable events with severity, category, provider, instrument, timestamp, message, and JSON details. The management UI includes a paginated operational-log viewer, while `GET /api/operational-events` supports filtering and pagination.
+Version 0.14.0 adds filtered operational-log export. Operators can download the same filtered event set shown in the management UI as CSV or newline-delimited JSON (JSONL). Exports preserve structured details, use deterministic column names, enforce a configurable safety limit, and produce timestamped download filenames. The UI now provides direct CSV and JSONL export controls.
 
 ## Operational diagnostics
 
@@ -157,6 +157,8 @@ The web UI shows database statistics and the live state of each configured provi
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/api/health` | Server health and version |
+| `GET` | `/api/operational-events` | Query structured operational events with filtering and pagination |
+| `GET` | `/api/operational-events/export` | Export filtered operational events as CSV or JSONL |
 | `GET` | `/api/statistics` | Database statistics |
 | `GET` | `/api/database/integrity` | Run SQLite integrity diagnostics |
 | `POST` | `/api/database/retention/preview` | Preview a retention policy without deleting data |
@@ -205,34 +207,12 @@ pytest -q
 
 The test suite covers candle creation, storage, provider configuration, historical backfill, gap repair, and the web API. GitHub Actions runs it on every push and pull request.
 
-## Commit and push changes
-
-After testing a completed change, review the working tree, stage the project files, create a descriptive commit, and push the current branch:
-
-```powershell
-git status
-git add .
-git commit -m "Add persistent operational event journal"
-git push
-```
-
-Use a commit message that describes the actual change. For example, the earlier market-calendar and Yahoo-fallback release could use:
-
-```powershell
-git commit -m "Add market calendar and Yahoo historical fallback"
-```
-
-Before `git add .`, check `git status` and confirm that generated databases, virtual environments, caches, secrets, and local configuration files are not being committed. The included `.gitignore` excludes the standard generated project files.
-
 ## Roadmap
 
-- Explicit provider priority and fallback policy
 - Richer symbol alias mapping
-- Automated scheduled backfill and repair jobs
-- Market-session calendars and holiday awareness
-- Data-quality diagnostics and operational log export
 - PostgreSQL storage option
 - Configurable scheduled retention policies
+- Authentication and role-based management access
 
 ## Candle quality and recovery
 

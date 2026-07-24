@@ -110,6 +110,42 @@ CREATE TABLE IF NOT EXISTS symbol_policies (
 CREATE INDEX IF NOT EXISTS ix_symbol_policies_canonical
 ON symbol_policies(canonical_instrument, enabled);
 
+
+CREATE TABLE IF NOT EXISTS candle_quality_issues (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ provider TEXT NOT NULL,
+ instrument TEXT NOT NULL,
+ timeframe TEXT NOT NULL,
+ open_time_utc TEXT NOT NULL,
+ reason TEXT NOT NULL,
+ severity TEXT NOT NULL,
+ action TEXT NOT NULL DEFAULT 'detected',
+ detected_utc TEXT NOT NULL,
+ resolved_utc TEXT NULL,
+ UNIQUE(provider, instrument, timeframe, open_time_utc, reason)
+);
+CREATE INDEX IF NOT EXISTS ix_candle_quality_issues
+ON candle_quality_issues(action, provider, instrument, timeframe, open_time_utc);
+
+CREATE TABLE IF NOT EXISTS quarantined_candles (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ provider TEXT NOT NULL,
+ instrument TEXT NOT NULL,
+ timeframe TEXT NOT NULL,
+ open_time_utc TEXT NOT NULL,
+ open TEXT NOT NULL,
+ high TEXT NOT NULL,
+ low TEXT NOT NULL,
+ close TEXT NOT NULL,
+ tick_count INTEGER NOT NULL,
+ volume TEXT NULL,
+ complete INTEGER NOT NULL,
+ reason TEXT NOT NULL,
+ quarantined_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_quarantined_candles_lookup
+ON quarantined_candles(provider, instrument, timeframe, open_time_utc);
+
 CREATE TABLE IF NOT EXISTS mt5_bridge_heartbeats (
  provider_key TEXT NOT NULL, terminal_instance_id TEXT NOT NULL, broker_name TEXT NULL,
  server_name TEXT NULL, account_login INTEGER NULL, source_time_utc TEXT NOT NULL,
@@ -365,6 +401,7 @@ class MarketDataStore:
             latest_tick = connection.execute("SELECT MAX(timestamp_utc) FROM ticks").fetchone()[0]
             latest_candle = connection.execute("SELECT MAX(open_time_utc) FROM candles").fetchone()[0]
             gaps = int(connection.execute("SELECT COUNT(*) FROM data_gaps WHERE resolved=0").fetchone()[0])
+            quality_issues = int(connection.execute("SELECT COUNT(*) FROM candle_quality_issues WHERE action='detected'").fetchone()[0])
         return {
             "ticks": ticks,
             "candles": candles,
@@ -373,6 +410,7 @@ class MarketDataStore:
             "latest_candle_utc": latest_candle,
             "database_path": str(self.database_path),
             "unresolved_gaps": gaps,
+            "unresolved_quality_issues": quality_issues,
         }
 
     def list_instruments(self) -> list[str]:

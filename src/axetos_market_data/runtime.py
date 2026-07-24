@@ -53,6 +53,8 @@ class ProviderWorker:
 
     def _provider(self):
         symbols = self.config.normalized_symbols()
+        if self.config.kind.lower() == "yahoo":
+            raise RuntimeError("Yahoo provider is historical-only; disable auto-start and use backfill/repair actions")
         if self.config.kind.lower() == "mt5":
             return MetaTrader5TickProvider(
                 symbols, self.config.terminal_path, self.config.provider_key,

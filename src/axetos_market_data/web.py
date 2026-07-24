@@ -12,6 +12,8 @@ from .config import ConfigurationStore, ProviderConfig
 from .runtime import ProviderSupervisor
 from .history import HistoricalBackfillService
 from .providers.mt5 import MetaTrader5TickProvider
+from .providers.yahoo import YahooHistoricalProvider
+from .calendar import MarketCalendar
 from datetime import datetime, UTC, timedelta
 from .storage import MarketDataStore
 from .diagnostics import build_health, build_metrics, prometheus_text
@@ -114,8 +116,10 @@ def create_app(
     housekeeping = HousekeepingService(store)
     bridge = Mt5BridgeService(store)
     quality = CandleQualityService(store)
+    calendar = MarketCalendar()
     app.state.bridge = bridge
     app.state.quality = quality
+    app.state.calendar = calendar
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def dashboard() -> str:
@@ -202,6 +206,21 @@ def create_app(
         values = store.list_cleanup_runs(limit)
         return {"count": len(values), "items": values}
 
+    @app.get("/api/calendar/closures")
+    def calendar_closures(instrument: str, start: str, end: str) -> dict[str, object]:
+        try:
+            start_date = datetime.fromisoformat(start).date()
+            end_date = datetime.fromisoformat(end).date()
+        except ValueError as exc:
+            raise HTTPException(400, "start and end must be ISO dates") from exc
+        if end_date < start_date:
+            raise HTTPException(400, "end must not be earlier than start")
+        values = calendar.closures(instrument, start_date, end_date)
+        return {"instrument": instrument, "count": len(values), "closures": [
+            {"date": item.date.isoformat(), "calendar_key": item.calendar_key, "name": item.name, "source": item.source}
+            for item in values
+        ]}
+
     @app.get("/api/providers")
     def providers() -> dict[str, object]:
         return {"providers": supervisor.list_views()}
@@ -253,6 +272,12 @@ def create_app(
                 return {"provider_key": provider_key, "kind": "mt5", **result}
             except RuntimeError as exc:
                 raise HTTPException(400, str(exc)) from exc
+        if config.kind.lower() == "yahoo":
+            try:
+                result = YahooHistoricalProvider(config.provider_key).test_connection(config.normalized_symbols()[0])
+                return {"provider_key": provider_key, "kind": "yahoo", **result}
+            except (RuntimeError, OSError, ValueError) as exc:
+                raise HTTPException(400, str(exc)) from exc
         raise HTTPException(400, f"Unsupported provider kind: {config.kind}")
 
     @app.get("/api/providers/{provider_key}")
@@ -288,14 +313,19 @@ def create_app(
         worker = supervisor.get(request.provider_key)
         if worker is None:
             raise HTTPException(404, "Provider not found")
-        if worker.config.kind.lower() != "mt5":
-            raise HTTPException(400, "Historical backfill currently requires an MT5 provider")
+        kind = worker.config.kind.lower()
+        if kind not in {"mt5", "yahoo"}:
+            raise HTTPException(400, "Historical backfill requires an MT5 or Yahoo provider")
         end = datetime.now(UTC)
         start = end - timedelta(days=request.days)
-        provider = MetaTrader5TickProvider(worker.config.normalized_symbols(), worker.config.terminal_path, request.provider_key)
-        instrument = request.instrument or provider._canonical_symbol(request.symbol)
+        if kind == "mt5":
+            provider = MetaTrader5TickProvider(worker.config.normalized_symbols(), worker.config.terminal_path, request.provider_key)
+            instrument = request.instrument or provider._canonical_symbol(request.symbol)
+        else:
+            provider = YahooHistoricalProvider(request.provider_key)
+            instrument = request.instrument or request.symbol
         try:
-            result = HistoricalBackfillService(store).run(provider, request.provider_key, request.symbol, instrument, request.timeframe, start, end)
+            result = HistoricalBackfillService(store, calendar).run(provider, request.provider_key, request.symbol, instrument, request.timeframe, start, end)
             return result.__dict__ if hasattr(result, "__dict__") else {name: getattr(result, name) for name in result.__slots__}
         except (RuntimeError, ValueError) as exc:
             store.set_ingestion_state(request.provider_key, instrument, request.timeframe, start, end, 0, 0, 0, "Failed", str(exc))
@@ -320,7 +350,7 @@ def create_app(
     def scan_gaps(request: GapScanRequest) -> dict[str, object]:
         end = datetime.now(UTC)
         start = end - timedelta(days=request.days)
-        count = HistoricalBackfillService(store).detect_gaps(
+        count = HistoricalBackfillService(store, calendar).detect_gaps(
             request.provider_key, request.instrument, request.timeframe, start, end
         )
         return {"provider": request.provider_key, "instrument": request.instrument,
@@ -331,15 +361,26 @@ def create_app(
         worker = supervisor.get(request.provider_key)
         if worker is None:
             raise HTTPException(404, "Provider not found")
-        if worker.config.kind.lower() != "mt5":
-            raise HTTPException(400, "Gap repair currently requires an MT5 provider")
-        provider = MetaTrader5TickProvider(
-            worker.config.normalized_symbols(), worker.config.terminal_path, request.provider_key
-        )
-        symbol_map = {
-            provider._canonical_symbol(symbol): symbol
-            for symbol in worker.config.normalized_symbols()
-        }
+        kind = worker.config.kind.lower()
+        if kind not in {"mt5", "yahoo"}:
+            raise HTTPException(400, "Gap repair requires an MT5 or Yahoo provider")
+        if kind == "mt5":
+            provider = MetaTrader5TickProvider(
+                worker.config.normalized_symbols(), worker.config.terminal_path, request.provider_key
+            )
+            symbol_map = {
+                provider._canonical_symbol(symbol): symbol
+                for symbol in worker.config.normalized_symbols()
+            }
+        else:
+            provider = YahooHistoricalProvider(request.provider_key)
+            policies = store.list_symbol_policies(provider_key=request.provider_key)
+            symbol_map = {
+                str(policy["canonical_instrument"]): str(policy["provider_symbol"])
+                for policy in policies if bool(policy["allow_history"])
+            }
+            for symbol in worker.config.normalized_symbols():
+                symbol_map.setdefault(symbol, YahooHistoricalProvider.resolve_symbol(symbol))
         try:
             result = HistoricalBackfillService(store).repair_gaps(
                 provider, request.provider_key, symbol_map,

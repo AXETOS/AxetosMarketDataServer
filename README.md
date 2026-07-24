@@ -4,7 +4,7 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.11.0
+## Version 0.12.0
 
 Version 0.10.0 adds persistent symbol policies, deterministic canonical-source selection, and provider connection testing. Provider symbols can be enabled independently for live and historical collection, assigned canonical instruments, and given priority overrides without blending feeds.
 
@@ -66,6 +66,12 @@ GET  /api/market-data/mt5/discovered-instruments
 POST /api/market-data/mt5/instrument-selection
 GET  /api/market-data/mt5/bridge/status
 ```
+
+## Market sessions and historical fallback
+
+Version 0.12.0 makes gap detection session-aware. FX uses a Sunday 22:00 UTC to Friday 22:00 UTC trading week, crypto remains 24x7, and major index/metal/energy instruments use deterministic exchange-holiday closures. The calendar can be inspected through `GET /api/calendar/closures`.
+
+A historical-only Yahoo Finance adapter is available as a controlled fallback source. It imports and validates provider candles but never participates in live tick routing and never blends candles with an authoritative provider. Configure it with `kind: yahoo`, disable auto-start, and use the existing backfill endpoint.
 
 ## Architecture
 
@@ -211,7 +217,7 @@ The test suite covers candle creation, storage, provider configuration, historic
 
 ## Candle quality and recovery
 
-Version 0.11.0 adds a persistent candle-quality pipeline. The server can scan stored candles for invalid OHLC structure, non-positive prices, negative tick counts, and configurable price discontinuities. Suspect records are logged without silently changing market history. Operators can quarantine an affected candle and rebuild a one-minute candle deterministically from the raw ticks retained for that minute.
+Version 0.12.0 adds a persistent candle-quality pipeline. The server can scan stored candles for invalid OHLC structure, non-positive prices, negative tick counts, and configurable price discontinuities. Suspect records are logged without silently changing market history. Operators can quarantine an affected candle and rebuild a one-minute candle deterministically from the raw ticks retained for that minute.
 
 Quality endpoints:
 

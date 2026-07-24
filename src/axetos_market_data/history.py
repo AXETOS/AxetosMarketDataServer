@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from .domain import Candle
+from .calendar import MarketCalendar
 from .storage import MarketDataStore
 from .timeframes import bucket_start
 
@@ -53,8 +54,9 @@ class GapRepairResult:
 
 
 class HistoricalBackfillService:
-    def __init__(self, store: MarketDataStore) -> None:
+    def __init__(self, store: MarketDataStore, calendar: MarketCalendar | None = None) -> None:
         self.store = store
+        self.calendar = calendar or MarketCalendar()
         self.log = logging.getLogger(__name__)
 
     def run(
@@ -98,9 +100,7 @@ class HistoricalBackfillService:
         cursor = bucket_start(start, timeframe)
         gaps = 0
         while cursor < end:
-            # This intentionally models the normal FX trading week. A future
-            # calendar service can add holidays and instrument-specific sessions.
-            if cursor.weekday() < 5 and cursor not in existing:
+            if self.calendar.is_expected_open(instrument, cursor) and cursor not in existing:
                 self.store.record_gap(
                     provider, instrument, timeframe,
                     cursor, cursor + timedelta(seconds=seconds),

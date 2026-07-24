@@ -78,6 +78,22 @@ CREATE TABLE IF NOT EXISTS repair_runs (
  created_utc TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_repair_runs_provider ON repair_runs(provider, created_utc);
+
+CREATE TABLE IF NOT EXISTS cleanup_runs (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ ticks_before_utc TEXT NOT NULL,
+ operational_before_utc TEXT NOT NULL,
+ ticks_deleted INTEGER NOT NULL,
+ resolved_gaps_deleted INTEGER NOT NULL,
+ ingestion_states_deleted INTEGER NOT NULL,
+ repair_runs_deleted INTEGER NOT NULL,
+ database_bytes_before INTEGER NOT NULL,
+ database_bytes_after INTEGER NOT NULL,
+ integrity_status TEXT NOT NULL,
+ vacuumed INTEGER NOT NULL,
+ created_utc TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_cleanup_runs_created ON cleanup_runs(created_utc);
 """
 
 
@@ -330,3 +346,113 @@ class MarketDataStore:
                 "SELECT DISTINCT instrument FROM candles ORDER BY instrument"
             ).fetchall()
         return [str(row[0]) for row in rows]
+
+
+    def integrity_check(self) -> dict[str, object]:
+        with self.connect() as connection:
+            rows = connection.execute("PRAGMA integrity_check").fetchall()
+        messages = [str(row[0]) for row in rows]
+        return {"status": "ok" if messages == ["ok"] else "failed", "messages": messages}
+
+    def retention_preview(
+        self,
+        ticks_before: datetime,
+        operational_before: datetime,
+    ) -> dict[str, int]:
+        with self.connect() as connection:
+            ticks = int(connection.execute(
+                "SELECT COUNT(*) FROM ticks WHERE timestamp_utc < ?", (_iso(ticks_before),)
+            ).fetchone()[0])
+            gaps = int(connection.execute(
+                "SELECT COUNT(*) FROM data_gaps WHERE resolved=1 AND detected_utc < ?",
+                (_iso(operational_before),),
+            ).fetchone()[0])
+            states = int(connection.execute(
+                "SELECT COUNT(*) FROM ingestion_state WHERE updated_utc < ?",
+                (_iso(operational_before),),
+            ).fetchone()[0])
+            repairs = int(connection.execute(
+                "SELECT COUNT(*) FROM repair_runs WHERE created_utc < ?",
+                (_iso(operational_before),),
+            ).fetchone()[0])
+        return {
+            "ticks": ticks,
+            "resolved_gaps": gaps,
+            "ingestion_states": states,
+            "repair_runs": repairs,
+        }
+
+    def run_retention(
+        self,
+        ticks_before: datetime,
+        operational_before: datetime,
+        vacuum: bool = False,
+    ) -> dict[str, object]:
+        before = self.database_path.stat().st_size if self.database_path.exists() else 0
+        with self.connect() as connection:
+            cursor = connection.execute("DELETE FROM ticks WHERE timestamp_utc < ?", (_iso(ticks_before),))
+            ticks_deleted = max(0, cursor.rowcount)
+            cursor = connection.execute(
+                "DELETE FROM data_gaps WHERE resolved=1 AND detected_utc < ?",
+                (_iso(operational_before),),
+            )
+            gaps_deleted = max(0, cursor.rowcount)
+            cursor = connection.execute(
+                "DELETE FROM ingestion_state WHERE updated_utc < ?", (_iso(operational_before),)
+            )
+            states_deleted = max(0, cursor.rowcount)
+            cursor = connection.execute(
+                "DELETE FROM repair_runs WHERE created_utc < ?", (_iso(operational_before),)
+            )
+            repairs_deleted = max(0, cursor.rowcount)
+
+        checkpoint = sqlite3.connect(self.database_path, timeout=30, isolation_level=None)
+        try:
+            checkpoint.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            checkpoint.close()
+
+        if vacuum:
+            connection = sqlite3.connect(self.database_path, timeout=30, isolation_level=None)
+            try:
+                connection.execute("VACUUM")
+            finally:
+                connection.close()
+
+        integrity = self.integrity_check()
+        after = self.database_path.stat().st_size if self.database_path.exists() else 0
+        result: dict[str, object] = {
+            "ticks_before_utc": _iso(ticks_before),
+            "operational_before_utc": _iso(operational_before),
+            "ticks_deleted": ticks_deleted,
+            "resolved_gaps_deleted": gaps_deleted,
+            "ingestion_states_deleted": states_deleted,
+            "repair_runs_deleted": repairs_deleted,
+            "database_bytes_before": before,
+            "database_bytes_after": after,
+            "integrity_status": integrity["status"],
+            "vacuumed": vacuum,
+            "created_utc": _iso(datetime.now().astimezone()),
+        }
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO cleanup_runs(
+                    ticks_before_utc, operational_before_utc, ticks_deleted,
+                    resolved_gaps_deleted, ingestion_states_deleted, repair_runs_deleted,
+                    database_bytes_before, database_bytes_after, integrity_status,
+                    vacuumed, created_utc
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    result["ticks_before_utc"], result["operational_before_utc"], ticks_deleted,
+                    gaps_deleted, states_deleted, repairs_deleted, before, after,
+                    result["integrity_status"], int(vacuum), result["created_utc"],
+                ),
+            )
+        return result
+
+    def list_cleanup_runs(self, limit: int = 50) -> list[dict[str, object]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM cleanup_runs ORDER BY created_utc DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(row) for row in rows]

@@ -4,10 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.7.0
+## Version 0.8.0
 
-Version 0.7.0 adds batched MetaTrader 5 tick retrieval and scheduled provider maintenance. MT5 ticks are collected with overlapping batch windows to reduce boundary loss, while database uniqueness prevents duplicate persistence. Optional maintenance workers can periodically backfill recent one-minute candles, scan for gaps, and repair missing history.
-
+Version 0.8.0 adds database lifecycle management for long-running collectors. Operators can preview and apply retention policies, remove old raw ticks and operational audit rows without deleting candles, run SQLite integrity checks, checkpoint the WAL, optionally compact the database, and inspect cleanup history.
 
 ## Operational diagnostics
 
@@ -47,6 +46,9 @@ GET /metrics
 - REST endpoints and OpenAPI documentation
 - Graceful shutdown with active candles stored as incomplete
 - Automated tests through GitHub Actions
+- Database integrity checks and retention previews
+- Safe cleanup of old raw ticks and operational history
+- WAL checkpointing, optional SQLite compaction, and cleanup audit history
 
 ## Architecture
 
@@ -133,6 +135,10 @@ The web UI shows database statistics and the live state of each configured provi
 |---|---|---|
 | `GET` | `/api/health` | Server health and version |
 | `GET` | `/api/statistics` | Database statistics |
+| `GET` | `/api/database/integrity` | Run SQLite integrity diagnostics |
+| `POST` | `/api/database/retention/preview` | Preview a retention policy without deleting data |
+| `POST` | `/api/database/retention/run` | Apply retention and optionally compact SQLite |
+| `GET` | `/api/database/retention/history` | Inspect cleanup audit history |
 | `GET` | `/api/providers` | Provider configurations and runtime state |
 | `PUT` | `/api/providers/{provider_key}` | Add or update a provider |
 | `POST` | `/api/providers/{provider_key}/{action}` | Start, stop, restart, enable, or disable |
@@ -184,6 +190,7 @@ The test suite covers candle creation, storage, provider configuration, historic
 - Market-session calendars and holiday awareness
 - Data-quality diagnostics and operational log export
 - PostgreSQL storage option
+- Configurable scheduled retention policies
 
 ## License
 

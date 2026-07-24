@@ -17,7 +17,7 @@ def test_mt5_symbol_normalization():
     assert MetaTrader5TickProvider._canonical_symbol("GBPUSD.raw") == "GBP/USD"
 
 
-def test_health_reports_v060(tmp_path):
+def test_health_reports_v070(tmp_path):
     app = create_app(tmp_path / "market.sqlite", tmp_path / "providers.json")
     with TestClient(app) as client:
-        assert client.get("/api/health").json()["version"] == "0.6.0"
+        assert client.get("/api/health").json()["version"] == "0.7.0"

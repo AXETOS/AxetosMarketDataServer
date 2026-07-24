@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .config import ConfigurationStore, ProviderConfig
@@ -14,6 +14,8 @@ from .history import HistoricalBackfillService
 from .providers.mt5 import MetaTrader5TickProvider
 from datetime import datetime, UTC, timedelta
 from .storage import MarketDataStore
+from .diagnostics import build_health, build_metrics, prometheus_text
+from . import __version__
 
 
 class BackfillRequest(BaseModel):
@@ -64,6 +66,7 @@ def create_app(
     store.initialize()
     config_store = ConfigurationStore(configuration_path)
     supervisor = ProviderSupervisor(config_store, store)
+    started_utc = datetime.now(UTC)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -73,7 +76,7 @@ def create_app(
 
     app = FastAPI(
         title="Axetos Market Data Server",
-        version="0.6.0",
+        version=__version__,
         description="Collects market ticks, builds OHLC candles, and stores market data.",
         lifespan=lifespan,
     )
@@ -86,7 +89,15 @@ def create_app(
 
     @app.get("/api/health")
     def health() -> dict[str, object]:
-        return {"product": "Axetos Market Data Server", "status": "running", "version": "0.6.0"}
+        return build_health(store, supervisor, __version__)
+
+    @app.get("/api/metrics")
+    def metrics() -> dict[str, object]:
+        return build_metrics(store, supervisor, started_utc)
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    def prometheus_metrics() -> str:
+        return prometheus_text(build_metrics(store, supervisor, started_utc))
 
     @app.get("/api/statistics")
     def statistics() -> dict[str, object]:
@@ -241,7 +252,7 @@ CONTROL_CENTER_HTML = r'''<!doctype html><html lang="en"><head><meta charset="ut
 <dialog id="editor"><h2 id="title">Add provider</h2><form id="form"><label>Provider key<input name="provider_key" required placeholder="ICMarkets.MT5"></label><label>Display name<input name="display_name" required placeholder="IC Markets MT5"></label><label>Provider type<select name="kind"><option value="mock">Mock</option><option value="mt5">MetaTrader 5</option></select></label><label>Polling interval<input name="poll_interval_seconds" type="number" step="0.1" value="1"></label><label class="wide">Symbols, comma separated<input name="symbols" value="EUR/USD"></label><label class="wide">MT5 terminal path<input name="terminal_path" placeholder="Optional terminal64.exe path"></label><label>Priority<input name="priority" type="number" min="0" value="100"></label><label>Fallback after seconds<input name="fallback_after_seconds" type="number" min="0.1" step="0.1" value="10"></label><label>Batch window seconds<input name="batch_window_seconds" type="number" min="1" value="5"></label><label>Batch limit<input name="batch_limit" type="number" min="100" value="50000"></label><label>Maintenance interval minutes<input name="maintenance_interval_minutes" type="number" min="1" value="60"></label><label>Maintenance backfill days<input name="maintenance_backfill_days" type="number" min="1" value="2"></label><label><input name="maintenance_enabled" type="checkbox" style="width:auto"> Scheduled maintenance</label><label><input name="enabled" type="checkbox" checked style="width:auto"> Enabled</label><label><input name="auto_start" type="checkbox" checked style="width:auto"> Auto-start</label><div id="error" class="error wide"></div><div class="actions wide"><button type="button" class="secondary" onclick="editor.close()">Cancel</button><button type="submit">Save</button></div></form></dialog>
 <script>
 const root=document.getElementById('providers'),stats=document.getElementById('stats'),count=document.getElementById('count'),editor=document.getElementById('editor'),form=document.getElementById('form'),title=document.getElementById('title'),error=document.getElementById('error');let editing=null;const esc=v=>String(v??'').replace(/[&<>\"]/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[x]));
-async function load(){const [pr,sr]=await Promise.all([fetch('/api/providers'),fetch('/api/statistics')]);const p=await pr.json(),s=await sr.json();stats.innerHTML=[['Ticks',s.ticks],['Candles',s.candles],['Instruments',s.instruments],['Latest tick',s.latest_tick_utc?new Date(s.latest_tick_utc).toLocaleString():'-'],['Unresolved gaps',s.unresolved_gaps]].map(x=>`<div class="card"><div class="label">${x[0]}</div><div class="value">${x[1]}</div></div>`).join('');count.textContent=`${p.providers.length} configured`;root.innerHTML=p.providers.length?'':'<div class="card">No providers configured.</div>';for(const x of p.providers){const c=x.configuration,r=x.runtime,e=document.createElement('article');e.className='card';e.innerHTML=`<div class="top"><div><div class="name">${esc(c.display_name)}</div><div class="key">${esc(c.provider_key)} · ${esc(c.kind)}</div></div><span class="status ${String(r.status).toLowerCase()}">${esc(r.status)}</span></div><div class="rows"><div><span class="label">Symbols</span><br>${c.symbols.map(esc).join(', ')}</div><div><span class="label">Ticks received</span><br>${r.ticks_received}</div><div><span class="label">Last tick</span><br>${r.last_tick_utc?new Date(r.last_tick_utc).toLocaleString():'-'}</div><div><span class="label">Auto-start</span><br>${c.auto_start?'Yes':'No'}</div><div><span class="label">Priority / fallback</span><br>${c.priority} / ${c.fallback_after_seconds}s</div><div><span class="label">Authoritative / standby ticks</span><br>${r.authoritative_ticks} / ${r.standby_ticks}</div><div><span class="label">Batch window / limit</span><br>${c.batch_window_seconds}s / ${c.batch_limit}</div><div><span class="label">Maintenance</span><br>${x.maintenance?`${esc(x.maintenance.status)} · next ${x.maintenance.next_run_utc?new Date(x.maintenance.next_run_utc).toLocaleString():'-'}`:'Disabled'}</div></div><div class="actions"><button onclick="editProvider('${esc(c.provider_key)}')">Edit</button><button onclick="act('${esc(c.provider_key)}','start')">Start</button><button class="secondary" onclick="act('${esc(c.provider_key)}','stop')">Stop</button><button onclick="act('${esc(c.provider_key)}','restart')">Restart</button>${c.kind==='mt5'?`<button class="secondary" onclick="backfill('${esc(c.provider_key)}','${esc(c.symbols[0]||'')}')">Backfill 7d</button><button class="secondary" onclick="repairGaps('${esc(c.provider_key)}')">Repair gaps</button>${c.maintenance_enabled?`<button class="secondary" onclick="act('${esc(c.provider_key)}','maintenance')">Run maintenance</button>`:''}`:''}<button class="danger" onclick="removeProvider('${esc(c.provider_key)}')">Remove</button></div>${r.last_error?`<div class="error">${esc(r.last_error)}</div>`:''}`;root.appendChild(e)}}
+async function load(){const [pr,sr,hr,mr]=await Promise.all([fetch('/api/providers'),fetch('/api/statistics'),fetch('/api/health'),fetch('/api/metrics')]);const p=await pr.json(),s=await sr.json(),h=await hr.json(),m=await mr.json();stats.innerHTML=[['Health',h.status],['Live providers',m.providers_live+'/'+m.providers_configured],['Ticks',s.ticks],['Candles',s.candles],['Instruments',s.instruments],['Database size',(m.database_size_bytes/1048576).toFixed(2)+' MB'],['Latest tick',s.latest_tick_utc?new Date(s.latest_tick_utc).toLocaleString():'-'],['Unresolved gaps',s.unresolved_gaps]].map(x=>`<div class="card"><div class="label">${x[0]}</div><div class="value">${x[1]}</div></div>`).join('');count.textContent=`${p.providers.length} configured`;root.innerHTML=p.providers.length?'':'<div class="card">No providers configured.</div>';for(const x of p.providers){const c=x.configuration,r=x.runtime,e=document.createElement('article');e.className='card';e.innerHTML=`<div class="top"><div><div class="name">${esc(c.display_name)}</div><div class="key">${esc(c.provider_key)} · ${esc(c.kind)}</div></div><span class="status ${String(r.status).toLowerCase()}">${esc(r.status)}</span></div><div class="rows"><div><span class="label">Symbols</span><br>${c.symbols.map(esc).join(', ')}</div><div><span class="label">Ticks received</span><br>${r.ticks_received}</div><div><span class="label">Last tick</span><br>${r.last_tick_utc?new Date(r.last_tick_utc).toLocaleString():'-'}</div><div><span class="label">Auto-start</span><br>${c.auto_start?'Yes':'No'}</div><div><span class="label">Priority / fallback</span><br>${c.priority} / ${c.fallback_after_seconds}s</div><div><span class="label">Authoritative / standby ticks</span><br>${r.authoritative_ticks} / ${r.standby_ticks}</div><div><span class="label">Batch window / limit</span><br>${c.batch_window_seconds}s / ${c.batch_limit}</div><div><span class="label">Maintenance</span><br>${x.maintenance?`${esc(x.maintenance.status)} · next ${x.maintenance.next_run_utc?new Date(x.maintenance.next_run_utc).toLocaleString():'-'}`:'Disabled'}</div></div><div class="actions"><button onclick="editProvider('${esc(c.provider_key)}')">Edit</button><button onclick="act('${esc(c.provider_key)}','start')">Start</button><button class="secondary" onclick="act('${esc(c.provider_key)}','stop')">Stop</button><button onclick="act('${esc(c.provider_key)}','restart')">Restart</button>${c.kind==='mt5'?`<button class="secondary" onclick="backfill('${esc(c.provider_key)}','${esc(c.symbols[0]||'')}')">Backfill 7d</button><button class="secondary" onclick="repairGaps('${esc(c.provider_key)}')">Repair gaps</button>${c.maintenance_enabled?`<button class="secondary" onclick="act('${esc(c.provider_key)}','maintenance')">Run maintenance</button>`:''}`:''}<button class="danger" onclick="removeProvider('${esc(c.provider_key)}')">Remove</button></div>${r.last_error?`<div class="error">${esc(r.last_error)}</div>`:''}`;root.appendChild(e)}}
 function openAdd(){editing=null;title.textContent='Add provider';form.reset();form.elements.poll_interval_seconds.value=1;form.elements.symbols.value='EUR/USD';form.elements.priority.value=100;form.elements.fallback_after_seconds.value=10;form.elements.batch_window_seconds.value=5;form.elements.batch_limit.value=50000;form.elements.maintenance_interval_minutes.value=60;form.elements.maintenance_backfill_days.value=2;form.elements.maintenance_enabled.checked=false;form.elements.enabled.checked=true;form.elements.auto_start.checked=true;form.elements.provider_key.readOnly=false;error.textContent='';editor.showModal()}
 async function editProvider(key){const r=await fetch('/api/providers/'+encodeURIComponent(key)),x=await r.json(),c=x.configuration;editing=key;title.textContent='Edit '+c.display_name;form.elements.provider_key.value=c.provider_key;form.elements.provider_key.readOnly=true;form.elements.display_name.value=c.display_name;form.elements.kind.value=c.kind;form.elements.poll_interval_seconds.value=c.poll_interval_seconds;form.elements.symbols.value=c.symbols.join(',');form.elements.terminal_path.value=c.terminal_path||'';form.elements.priority.value=c.priority;form.elements.fallback_after_seconds.value=c.fallback_after_seconds;form.elements.batch_window_seconds.value=c.batch_window_seconds;form.elements.batch_limit.value=c.batch_limit;form.elements.maintenance_interval_minutes.value=c.maintenance_interval_minutes;form.elements.maintenance_backfill_days.value=c.maintenance_backfill_days;form.elements.maintenance_enabled.checked=c.maintenance_enabled;form.elements.enabled.checked=c.enabled;form.elements.auto_start.checked=c.auto_start;editor.showModal()}
 async function backfill(key,symbol){const r=await fetch('/api/backfill',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider_key:key,symbol:symbol,timeframe:'1m',days:7})});const x=await r.json();alert(r.ok?`Backfill complete: ${x.written} candles, ${x.gaps} gaps`:(x.detail||'Backfill failed'));load()}

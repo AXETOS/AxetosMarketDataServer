@@ -4,10 +4,22 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.6.0
+## Version 0.7.0
 
-Version 0.6.0 adds batched MetaTrader 5 tick retrieval and scheduled provider maintenance. MT5 ticks are collected with overlapping batch windows to reduce boundary loss, while database uniqueness prevents duplicate persistence. Optional maintenance workers can periodically backfill recent one-minute candles, scan for gaps, and repair missing history.
+Version 0.7.0 adds batched MetaTrader 5 tick retrieval and scheduled provider maintenance. MT5 ticks are collected with overlapping batch windows to reduce boundary loss, while database uniqueness prevents duplicate persistence. Optional maintenance workers can periodically backfill recent one-minute candles, scan for gaps, and repair missing history.
 
+
+## Operational diagnostics
+
+Version 0.7.0 adds structured health and metrics endpoints, Prometheus-compatible text metrics, database-size reporting, provider health evaluation, and clearer operational status in the management UI. The development dependency set also includes `httpx`, which is required by FastAPI/Starlette `TestClient` in GitHub Actions.
+
+Important endpoints:
+
+```text
+GET /api/health
+GET /api/metrics
+GET /metrics
+```
 
 ## Current capabilities
 

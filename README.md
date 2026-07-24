@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.21.1
+## Version 0.22.0
 
-Version 0.21.1 removes manual symbol entry from MT5 provider setup. MT5 providers are now created without implicit symbols, and broker instruments are selected only through the managed symbol-discovery and canonical-mapping workflow. This prevents canonical names such as `EUR/USD` from being passed accidentally to MT5 where the broker expects a symbol such as `EURUSD.pro`. Version 0.21.1 also corrects the managed-symbol dialog layout with clearly separated broker-symbol, canonical-instrument, mapping-state, priority, and action columns, including responsive behavior on narrower screens.
+Version 0.22.0 prevents duplicate active broker-symbol mappings for the same canonical instrument. It identifies alternatives such as `EURUSD` and `EURUSD.pro`, marks inactive alternatives in the management UI, rejects conflicting confirmations, and removes ignored symbols from the provider subscription list. Version 0.22.0 retains the managed MT5 setup and visual improvements introduced in 0.21.x. MT5 providers are now created without implicit symbols, and broker instruments are selected only through the managed symbol-discovery and canonical-mapping workflow. This prevents canonical names such as `EUR/USD` from being passed accidentally to MT5 where the broker expects a symbol such as `EURUSD.pro`. Version 0.21.1 also corrects the managed-symbol dialog layout with clearly separated broker-symbol, canonical-instrument, mapping-state, priority, and action columns, including responsive behavior on narrower screens.
 
 ## Storage backends
 

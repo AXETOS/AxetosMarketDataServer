@@ -101,7 +101,7 @@ class WebhookAlertDispatcher:
         request = urllib.request.Request(
             self.settings.webhook_url or "",
             data=body,
-            headers={"Content-Type": "application/json", "User-Agent": "AxetosMarketDataServer/0.23.0"},
+            headers={"Content-Type": "application/json", "User-Agent": "AxetosMarketDataServer/0.24.0"},
             method="POST",
         )
         try:
@@ -128,7 +128,7 @@ def build_alert_payload(
 ) -> dict[str, Any]:
     return {
         "source": "Axetos Market Data Server",
-        "version": "0.23.0",
+        "version": "0.24.0",
         "event_id": event_id,
         "severity": severity,
         "category": category,

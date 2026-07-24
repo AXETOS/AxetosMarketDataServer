@@ -7,6 +7,7 @@ from .providers.mock import MockTickProvider
 from .providers.mt5 import MetaTrader5TickProvider
 from .service import MarketDataService
 from .storage import MarketDataStore
+from .backups import BackupError, BackupService
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,6 +28,19 @@ def build_parser() -> argparse.ArgumentParser:
     aggregate.add_argument("--provider", required=True)
     aggregate.add_argument("--instrument", required=True)
     aggregate.add_argument("--timeframe", required=True)
+
+    backup = subparsers.add_parser("backup", help="Create and verify a portable SQLite backup archive.")
+    backup.add_argument("--output")
+    backup.add_argument("--configuration", default="data/providers.json")
+    backup.add_argument("--backup-directory", default="data/backups")
+
+    verify = subparsers.add_parser("verify-backup", help="Verify checksums and SQLite integrity.")
+    verify.add_argument("archive")
+
+    restore = subparsers.add_parser("restore", help="Restore a verified SQLite backup archive.")
+    restore.add_argument("archive")
+    restore.add_argument("--configuration", default="data/providers.json")
+    restore.add_argument("--overwrite", action="store_true")
     return parser
 
 
@@ -36,6 +50,25 @@ def main() -> None:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    if args.command in {"backup", "verify-backup", "restore"}:
+        service = BackupService(
+            args.database,
+            getattr(args, "configuration", "data/providers.json"),
+            getattr(args, "backup_directory", "data/backups"),
+        )
+        try:
+            if args.command == "backup":
+                result = service.create(args.output)
+            elif args.command == "verify-backup":
+                result = service.verify(args.archive)
+            else:
+                result = service.restore(args.archive, overwrite=args.overwrite)
+        except BackupError as exc:
+            raise SystemExit(str(exc)) from exc
+        import json
+        print(json.dumps(result, indent=2))
+        return
+
     store = MarketDataStore(args.database)
     store.initialize()
 

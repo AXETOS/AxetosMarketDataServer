@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.22.0
+## Version 0.24.0
 
-Version 0.22.0 prevents duplicate active broker-symbol mappings for the same canonical instrument. It identifies alternatives such as `EURUSD` and `EURUSD.pro`, marks inactive alternatives in the management UI, rejects conflicting confirmations, and removes ignored symbols from the provider subscription list. Version 0.22.0 retains the managed MT5 setup and visual improvements introduced in 0.21.x. MT5 providers are now created without implicit symbols, and broker instruments are selected only through the managed symbol-discovery and canonical-mapping workflow. This prevents canonical names such as `EUR/USD` from being passed accidentally to MT5 where the broker expects a symbol such as `EURUSD.pro`. Version 0.21.1 also corrects the managed-symbol dialog layout with clearly separated broker-symbol, canonical-instrument, mapping-state, priority, and action columns, including responsive behavior on narrower screens.
+Version 0.24.0 adds verified SQLite backup and restore tooling. Backups use SQLite's online backup API, include provider configuration when present, and are packaged as portable ZIP archives with a manifest, SHA-256 checksums, application version, and UTC creation time. Every created archive is verified immediately, including a SQLite integrity check. Restore refuses to overwrite an existing database unless explicitly authorized. PostgreSQL deployments continue to use `pg_dump` and `pg_restore`.
 
 ## Storage backends
 
@@ -104,6 +104,7 @@ GET /metrics
 - Graceful shutdown with active candles stored as incomplete
 - Automated tests through GitHub Actions
 - Database integrity checks and retention previews
+- Verified SQLite backup archives with checksums, manifests, and restore tooling
 - Safe cleanup of old raw ticks and operational history, including structured operational events
 - WAL checkpointing, optional SQLite compaction, and cleanup audit history
 
@@ -277,7 +278,6 @@ The test suite covers candle creation, storage, provider configuration, historic
 ## Roadmap
 
 - PostgreSQL integration tests in CI using an ephemeral service database
-- Automated backup and restore commands
 - Deployment packaging with Docker and health-checked PostgreSQL
 - Load and endurance benchmarks for sustained tick ingestion
 
@@ -315,6 +315,27 @@ The webhook receives the event ID, version, severity, category, provider, canoni
 GET  /api/alerts/status
 POST /api/alerts/test
 ```
+
+## Backup and restore
+
+Version 0.24.0 provides built-in backup and restore commands for SQLite deployments. The backup operation uses SQLite's online backup API, so it creates a transactionally consistent copy even while the source database uses WAL mode. The resulting ZIP contains the database, optional `providers.json`, and a manifest with SHA-256 checksums.
+
+```powershell
+axetos-market-data --database data/market_data.sqlite backup
+axetos-market-data --database data/market_data.sqlite verify-backup data/backups/axetos-market-data-YYYYMMDDTHHMMSSZ.zip
+axetos-market-data --database restored/market_data.sqlite restore data/backups/axetos-market-data-YYYYMMDDTHHMMSSZ.zip --configuration restored/providers.json
+```
+
+Restoring over an existing database requires `--overwrite`. Stop the server before restoring its active database. PostgreSQL deployments must use `pg_dump` and `pg_restore`; the built-in archive format intentionally does not attempt to replace PostgreSQL-native backup and recovery tooling.
+
+Management endpoints:
+
+```text
+GET  /api/backups
+POST /api/backups
+```
+
+The management UI includes a **Create backup** action. Backup archives are runtime data under `data/backups/` and are excluded from release ZIPs and Git.
 
 ## License
 

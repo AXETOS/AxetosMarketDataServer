@@ -677,6 +677,8 @@ class MarketDataStore:
     def upsert_symbol_policy(self, provider_key: str, provider_symbol: str, canonical_instrument: str,
                              enabled: bool = True, allow_live: bool = True, allow_history: bool = True,
                              priority_override: int | None = None) -> dict[str, object]:
+        from .symbols import normalize_instrument
+        canonical_instrument = normalize_instrument(canonical_instrument)
         now = _iso(datetime.now().astimezone())
         with self.connect() as connection:
             connection.execute("""INSERT INTO symbol_policies(provider_key,provider_symbol,canonical_instrument,enabled,allow_live,allow_history,priority_override,updated_utc)

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from ..domain import Candle, Tick
+from ..symbols import SymbolResolver, normalize_instrument
 
 
 class MetaTrader5TickProvider:
@@ -18,6 +19,7 @@ class MetaTrader5TickProvider:
         provider_name: str = "mt5",
         batch_window_seconds: int = 5,
         batch_limit: int = 50_000,
+        symbol_aliases: dict[str, str] | None = None,
     ) -> None:
         self.symbols = symbols
         self.terminal_path = terminal_path
@@ -25,15 +27,11 @@ class MetaTrader5TickProvider:
         self.batch_window_seconds = max(1, batch_window_seconds)
         self.batch_limit = max(1, batch_limit)
         self.last_batch_sizes: dict[str, int] = {}
+        self.symbol_resolver = SymbolResolver(aliases=symbol_aliases)
 
     @staticmethod
     def _canonical_symbol(symbol: str) -> str:
-        upper = symbol.upper()
-        for suffix in (".PRO", ".RAW", ".ECN", "_PRO", "-PRO"):
-            if upper.endswith(suffix):
-                upper = upper[: -len(suffix)]
-                break
-        return f"{upper[:3]}/{upper[3:]}" if len(upper) == 6 and upper.isalpha() else upper
+        return normalize_instrument(symbol)
 
     def _module(self):
         try:
@@ -115,7 +113,7 @@ class MetaTrader5TickProvider:
                         volume_real = row["volume_real"] if "volume_real" in row.dtype.names else 0
                         yield Tick(
                             self.name,
-                            self._canonical_symbol(symbol),
+                            self.symbol_resolver.resolve(self.name, symbol).canonical_instrument,
                             timestamp,
                             bid,
                             ask,
@@ -154,7 +152,7 @@ class MetaTrader5TickProvider:
             return [
                 Candle(
                     self.name,
-                    self._canonical_symbol(symbol),
+                    self.symbol_resolver.resolve(self.name, symbol).canonical_instrument,
                     timeframe,
                     datetime.fromtimestamp(int(row["time"]), tz=UTC),
                     Decimal(str(row["open"])),

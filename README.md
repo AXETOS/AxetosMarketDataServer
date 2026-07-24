@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.14.0
+## Version 0.15.0
 
-Version 0.14.0 adds filtered operational-log export. Operators can download the same filtered event set shown in the management UI as CSV or newline-delimited JSON (JSONL). Exports preserve structured details, use deterministic column names, enforce a configurable safety limit, and produce timestamped download filenames. The UI now provides direct CSV and JSONL export controls.
+Version 0.15.0 adds canonical symbol normalization and provider alias resolution. Broker-specific symbols such as `EURUSD`, `EURUSD.pro`, and `EURUSD.raw` resolve to the same canonical `EUR/USD` identity. Explicit symbol policies take precedence over provider configuration aliases, which take precedence over automatic normalization. MT5 direct ingestion, bridge instrument discovery, quotes, ticks, candles, and historical backfill now use the same resolver.
 
 ## Operational diagnostics
 
@@ -42,6 +42,7 @@ GET /metrics
 - Repair-run audit history
 - SQLite storage with WAL mode and indexed lookup paths
 - Provider configuration persisted in JSON
+- Canonical symbol normalization with provider-specific aliases and policy overrides
 - Browser-based provider control center
 - REST endpoints and OpenAPI documentation
 - Graceful shutdown with active candles stored as incomplete
@@ -158,6 +159,8 @@ The web UI shows database statistics and the live state of each configured provi
 |---|---|---|
 | `GET` | `/api/health` | Server health and version |
 | `GET` | `/api/operational-events` | Query structured operational events with filtering and pagination |
+| `GET` | `/api/symbol-normalization` | Preview canonical resolution for a provider symbol |
+| `GET/PUT/DELETE` | `/api/symbol-policies` | Manage explicit provider-symbol mappings and routing policy |
 | `GET` | `/api/operational-events/export` | Export filtered operational events as CSV or JSONL |
 | `GET` | `/api/statistics` | Database statistics |
 | `GET` | `/api/database/integrity` | Run SQLite integrity diagnostics |

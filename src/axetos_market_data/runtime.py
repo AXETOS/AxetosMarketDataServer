@@ -62,7 +62,7 @@ class ProviderWorker:
         if self.config.kind.lower() == "mt5":
             return MetaTrader5TickProvider(
                 symbols, self.config.terminal_path, self.config.provider_key,
-                self.config.batch_window_seconds, self.config.batch_limit,
+                self.config.batch_window_seconds, self.config.batch_limit, self.config.symbol_aliases,
             )
         return MockTickProvider(symbols[0], self.config.poll_interval_seconds, provider=self.config.provider_key)
 

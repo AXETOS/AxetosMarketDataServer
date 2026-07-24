@@ -25,6 +25,7 @@ from . import __version__
 from .policies import choose_canonical_source
 from .quality import CandleQualityService
 from .operational import OperationalEventService
+from .symbols import SymbolResolver, normalize_instrument
 from .bridge import (Mt5BridgeService, BridgeHeartbeatRequest, BridgeInstrumentsRequest, BridgeTicksRequest, BridgeQuotesRequest, BridgeCandlesRequest, InstrumentSelectionRequest)
 
 
@@ -82,6 +83,7 @@ class ProviderRequest(BaseModel):
     auto_start: bool = True
     poll_interval_seconds: float = Field(default=1.0, gt=0)
     symbols: list[str] = Field(default_factory=lambda: ["EUR/USD"])
+    symbol_aliases: dict[str, str] = Field(default_factory=dict)
     terminal_path: str | None = None
     priority: int = Field(default=100, ge=0, le=10000)
     fallback_after_seconds: float = Field(default=10.0, gt=0, le=3600)
@@ -306,9 +308,21 @@ def create_app(
         items = store.list_symbol_policies(provider_key, instrument)
         return {"count": len(items), "items": items}
 
+    @app.get("/api/symbol-normalization")
+    def symbol_normalization(provider_key: str, provider_symbol: str, reported: str | None = None) -> dict[str, object]:
+        resolution = SymbolResolver(store).resolve(provider_key, provider_symbol, reported)
+        return {
+            "provider_key": resolution.provider_key,
+            "provider_symbol": resolution.provider_symbol,
+            "canonical_instrument": resolution.canonical_instrument,
+            "source": resolution.source,
+        }
+
     @app.put("/api/symbol-policies")
     def upsert_symbol_policy(request: SymbolPolicyRequest) -> dict[str, object]:
-        return store.upsert_symbol_policy(**request.model_dump())
+        payload = request.model_dump()
+        payload["canonical_instrument"] = normalize_instrument(payload["canonical_instrument"])
+        return store.upsert_symbol_policy(**payload)
 
     @app.delete("/api/symbol-policies/{provider_key}/{provider_symbol:path}")
     def delete_symbol_policy(provider_key: str, provider_symbol: str) -> dict[str, object]:
@@ -341,7 +355,7 @@ def create_app(
             try:
                 result = MetaTrader5TickProvider(
                     config.normalized_symbols(), config.terminal_path, config.provider_key,
-                    config.batch_window_seconds, config.batch_limit,
+                    config.batch_window_seconds, config.batch_limit, config.symbol_aliases,
                 ).test_connection()
                 payload = {"provider_key": provider_key, "kind": "mt5", **result}
                 events.record("info", "provider.connection_test", "Provider connection test completed", provider=provider_key, details=payload)
@@ -399,8 +413,8 @@ def create_app(
         end = datetime.now(UTC)
         start = end - timedelta(days=request.days)
         if kind == "mt5":
-            provider = MetaTrader5TickProvider(worker.config.normalized_symbols(), worker.config.terminal_path, request.provider_key)
-            instrument = request.instrument or provider._canonical_symbol(request.symbol)
+            provider = MetaTrader5TickProvider(worker.config.normalized_symbols(), worker.config.terminal_path, request.provider_key, symbol_aliases=worker.config.symbol_aliases)
+            instrument = normalize_instrument(request.instrument or provider.symbol_resolver.resolve(request.provider_key, request.symbol).canonical_instrument)
         else:
             provider = YahooHistoricalProvider(request.provider_key)
             instrument = request.instrument or request.symbol

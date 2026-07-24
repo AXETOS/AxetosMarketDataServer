@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from .domain import Candle, Tick
 from .service import MarketDataService
 from .storage import MarketDataStore
+from .symbols import SymbolResolver
 
 
 class BridgeHeartbeatRequest(BaseModel):
@@ -116,6 +117,7 @@ class Mt5BridgeService:
 
     def __init__(self, store: MarketDataStore, max_queue_batches: int = 1000) -> None:
         self.store = store
+        self.symbols = SymbolResolver(store)
         self._queue: queue.Queue[BridgeTicksRequest | None] = queue.Queue(maxsize=max_queue_batches)
         self.stats = QueueStats()
         self._thread = threading.Thread(target=self._consume, daemon=True, name="mt5-bridge-ingestion")
@@ -137,7 +139,15 @@ class Mt5BridgeService:
 
     def instruments(self, request: BridgeInstrumentsRequest) -> int:
         self.validate_identity(request.provider_key, request.terminal_instance_id)
-        rows = [x.model_dump(by_alias=False) for x in request.instruments if x.provider_symbol.strip() and x.canonical_instrument.strip()]
+        rows = []
+        for item in request.instruments:
+            if not item.provider_symbol.strip():
+                continue
+            row = item.model_dump(by_alias=False)
+            row["canonical_instrument"] = self.symbols.resolve(
+                request.provider_key, item.provider_symbol, item.canonical_instrument
+            ).canonical_instrument
+            rows.append(row)
         self.store.upsert_bridge_instruments(request.provider_key, request.terminal_instance_id, request.time_utc, rows)
         return len(rows)
 
@@ -155,7 +165,11 @@ class Mt5BridgeService:
         now = datetime.now(UTC)
         for item in request.quotes:
             if item.bid <= 0 or item.ask < item.bid: continue
-            self.store.upsert_bridge_quote(request.provider_key, request.terminal_instance_id, item.model_dump(by_alias=False), now)
+            value = item.model_dump(by_alias=False)
+            value["canonical_instrument"] = self.symbols.resolve(
+                request.provider_key, item.provider_symbol, item.canonical_instrument
+            ).canonical_instrument
+            self.store.upsert_bridge_quote(request.provider_key, request.terminal_instance_id, value, now)
             accepted += 1
         return accepted
 
@@ -166,7 +180,10 @@ class Mt5BridgeService:
         values=[]
         for item in request.candles:
             try:
-                values.append(Candle(request.provider_key, request.canonical_instrument, interval, item.time_utc, item.open, item.high, item.low, item.close, item.tick_volume or 0, Decimal(item.tick_volume or 0), True))
+                instrument = self.symbols.resolve(
+                    request.provider_key, request.provider_symbol, request.canonical_instrument
+                ).canonical_instrument
+                values.append(Candle(request.provider_key, instrument, interval, item.time_utc, item.open, item.high, item.low, item.close, item.tick_volume or 0, Decimal(item.tick_volume or 0), True))
             except ValueError: continue
         return self.store.upsert_candles(values)
 
@@ -181,7 +198,10 @@ class Mt5BridgeService:
                 ticks=[]
                 for item in request.ticks:
                     try:
-                        ticks.append(Tick(request.provider_key, item.canonical_instrument, item.received_utc or datetime.now(UTC), item.bid, item.ask, item.volume))
+                        instrument = self.symbols.resolve(
+                            request.provider_key, item.provider_symbol, item.canonical_instrument
+                        ).canonical_instrument
+                        ticks.append(Tick(request.provider_key, instrument, item.received_utc or datetime.now(UTC), item.bid, item.ask, item.volume))
                     except ValueError: self.stats.rejected_ticks += 1
                 ticks.sort(key=lambda x:x.timestamp)
                 if ticks: service.run(ticks)

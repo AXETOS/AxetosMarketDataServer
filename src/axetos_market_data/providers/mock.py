@@ -12,8 +12,9 @@ from ..domain import Tick
 class MockTickProvider:
     name = "mock"
 
-    def __init__(self, instrument: str = "EUR/USD", interval_seconds: float = 1.0) -> None:
+    def __init__(self, instrument: str = "EUR/USD", interval_seconds: float = 1.0, provider: str = "Mock") -> None:
         self.instrument = instrument
+        self.provider = provider
         self.interval_seconds = interval_seconds
         self._mid = Decimal("1.10000")
 
@@ -23,7 +24,7 @@ class MockTickProvider:
             self._mid += movement
             spread = Decimal("0.00010")
             yield Tick(
-                provider=self.name,
+                provider=self.provider,
                 instrument=self.instrument,
                 timestamp=datetime.now(timezone.utc),
                 bid=self._mid - spread / 2,

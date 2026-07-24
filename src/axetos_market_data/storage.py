@@ -169,3 +169,26 @@ class MarketDataStore:
             )
             for row in reversed(rows)
         ]
+
+    def statistics(self) -> dict[str, object]:
+        with self.connect() as connection:
+            ticks = int(connection.execute("SELECT COUNT(*) FROM ticks").fetchone()[0])
+            candles = int(connection.execute("SELECT COUNT(*) FROM candles").fetchone()[0])
+            instruments = int(connection.execute("SELECT COUNT(DISTINCT instrument) FROM candles").fetchone()[0])
+            latest_tick = connection.execute("SELECT MAX(timestamp_utc) FROM ticks").fetchone()[0]
+            latest_candle = connection.execute("SELECT MAX(open_time_utc) FROM candles").fetchone()[0]
+        return {
+            "ticks": ticks,
+            "candles": candles,
+            "instruments": instruments,
+            "latest_tick_utc": latest_tick,
+            "latest_candle_utc": latest_candle,
+            "database_path": str(self.database_path),
+        }
+
+    def list_instruments(self) -> list[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT DISTINCT instrument FROM candles ORDER BY instrument"
+            ).fetchall()
+        return [str(row[0]) for row in rows]

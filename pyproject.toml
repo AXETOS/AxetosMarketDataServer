@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "axetos-market-data-server"
-version = "0.1.0"
+version = "0.2.0"
 description = "Provider-agnostic financial market-data collector and candle store."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "License :: OSI Approved :: MIT License",
 ]
-dependencies = []
+dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "pydantic>=2.8"]
 
 [project.optional-dependencies]
 mt5 = ["MetaTrader5>=5.0.45"]
@@ -26,6 +26,7 @@ dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.11"]
 
 [project.scripts]
 axetos-market-data = "axetos_market_data.cli:main"
+axetos-market-data-server = "axetos_market_data.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/axetos_market_data"]

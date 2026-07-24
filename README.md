@@ -1,172 +1,155 @@
 # Axetos Market Data Server
 
-A focused Python service for collecting financial market ticks, building OHLC candles, and storing market data in SQLite.
+A standalone Python market-data server for collecting financial market ticks, building OHLC candles, aggregating timeframes, and storing market data in SQLite.
 
-This repository intentionally contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no accounts, positions, balances, chart rendering, trading strategies, or user interface.
+This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Scope
+## Current capabilities
+
+- Continuous provider supervision in background worker threads
+- Built-in deterministic mock provider for local development
+- Optional direct MetaTrader 5 provider
+- Raw tick persistence with duplicate protection
+- Deterministic UTC one-minute OHLC candle construction
+- Higher-timeframe candle aggregation
+- SQLite storage with WAL mode and indexed lookup paths
+- Provider configuration persisted in JSON
+- Provider start, stop, restart, enable, disable, edit, and removal operations
+- Browser-based provider control center and database statistics
+- REST endpoints and automatically generated OpenAPI documentation
+- Graceful shutdown with active candles persisted as incomplete
+- Automated tests through GitHub Actions
+
+## Architecture
 
 ```text
 Market-data provider
-        ↓
-Normalized ticks
-        ↓
-One-minute candle builder
-        ↓
+        |
+        v
+Provider supervisor and worker
+        |
+        v
+Tick normalization and validation
+        |
+        +----> SQLite tick store
+        |
+        v
+1-minute candle builder
+        |
+        v
 Higher-timeframe aggregation
-        ↓
-SQLite database
+        |
+        v
+SQLite candle store
 ```
 
-The database can be consumed by a separate trading platform, analytics application, or research tool.
-
-## Features
-
-- Strict typed domain models for ticks and candles
-- UTC-normalized timestamps
-- Duplicate-resistant tick persistence
-- Deterministic one-minute OHLC candle construction
-- Candle upserts for active/incomplete candles
-- Higher-timeframe aggregation from stored one-minute candles
-- SQLite WAL mode for concurrent readers
-- Optional direct MetaTrader 5 tick provider
-- Built-in mock provider for development and demonstrations
-- Unit tests for candle construction and persistence
+The server is intentionally separated from any trading platform. A trading platform may read the database or consume the REST endpoints, but order execution remains outside this project.
 
 ## Requirements
 
 - Python 3.11 or newer
-- Windows and an installed MetaTrader 5 terminal only when using the optional MT5 provider
+- MetaTrader 5 terminal and the `MetaTrader5` Python package only when using the MT5 provider
 
 ## Installation
 
-```bash
-python -m venv .venv
-```
-
-Windows:
-
 ```powershell
+python -m venv .venv
 .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 pip install -e ".[dev]"
 ```
 
-Linux/macOS:
-
-```bash
-source .venv/bin/activate
-pip install -e '.[dev]'
-```
-
-For direct MetaTrader 5 collection on Windows:
+For MetaTrader 5 support:
 
 ```powershell
 pip install -e ".[dev,mt5]"
 ```
 
-## Run the local demonstration collector
-
-```bash
-axetos-market-data --database data/market_data.sqlite mock --instrument EUR/USD --interval 0.25
-```
-
-Stop with `Ctrl+C`. The active minute is persisted with `complete = 0`; finalized minutes are stored with `complete = 1`.
-
-## Run with MetaTrader 5
+## Run the server
 
 ```powershell
-axetos-market-data --database data/market_data.sqlite mt5 `
-  --symbol EURUSD.pro `
-  --symbol GBPUSD.pro
+axetos-market-data-server
 ```
 
-An explicit terminal path can be supplied when several terminals are installed:
+Or:
 
 ```powershell
-axetos-market-data --database data/market_data.sqlite mt5 `
-  --terminal-path "C:\Program Files\MetaTrader 5\terminal64.exe" `
-  --symbol EURUSD.pro
+python -m axetos_market_data.server --host 127.0.0.1 --port 8000
 ```
 
-## Aggregate stored candles
+Open:
 
-```bash
-axetos-market-data --database data/market_data.sqlite aggregate \
-  --provider mt5 \
-  --instrument EUR/USD \
-  --timeframe 5m
+- Control center: `http://127.0.0.1:8000/`
+- OpenAPI documentation: `http://127.0.0.1:8000/docs`
+- Health endpoint: `http://127.0.0.1:8000/api/health`
+
+The default files are created under `data/`:
+
+```text
+data/market_data.sqlite
+data/providers.json
 ```
 
-Supported target timeframes are `5m`, `15m`, `30m`, `1h`, `4h`, and `1d`.
+## Provider control center
 
-## Database schema
+The web UI shows:
 
-### `ticks`
+- stored tick and candle totals;
+- instrument count and latest tick time;
+- configured provider state;
+- provider type and symbols;
+- received tick count and last tick;
+- start, stop, restart, edit, enable/disable, and remove operations.
 
-Raw normalized provider observations:
+A mock provider can be configured directly from the UI. For an MT5 provider, select **MetaTrader 5**, enter one or more terminal symbols, and optionally provide the path to `terminal64.exe`.
 
-- provider
-- instrument
-- timestamp_utc
-- bid
-- ask
-- volume
+## REST endpoints
 
-### `candles`
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/api/health` | Server health and version |
+| `GET` | `/api/statistics` | Database statistics |
+| `GET` | `/api/providers` | Provider configurations and runtime state |
+| `PUT` | `/api/providers/{provider_key}` | Add or update a provider |
+| `POST` | `/api/providers/{provider_key}/{action}` | Start, stop, restart, enable, or disable |
+| `DELETE` | `/api/providers/{provider_key}` | Remove a provider; historical data remains |
+| `GET` | `/api/instruments` | Instruments currently stored |
+| `GET` | `/api/candles` | Query stored candles |
 
-Persisted OHLC data:
+Example candle query:
 
-- provider
-- instrument
-- timeframe
-- open_time_utc
-- open
-- high
-- low
-- close
-- tick_count
-- volume
-- complete
+```text
+/api/candles?instrument=EUR%2FUSD&timeframe=1m&limit=200
+```
 
-Prices are stored as decimal strings rather than binary floating-point values to avoid unnecessary precision loss.
+## Existing command-line collector
 
-## Design decisions
+The original command-line workflow remains available:
 
-### One responsibility
+```powershell
+axetos-market-data mock --instrument EUR/USD --interval 1
+```
 
-The service collects and stores market data. Execution belongs to a separate trading platform.
+```powershell
+axetos-market-data mt5 --symbol EURUSD --symbol GBPUSD
+```
 
-### Provider normalization
-
-Provider-specific symbol names are normalized before persistence. For example, `EURUSD.pro` becomes `EUR/USD`.
-
-### UTC only
-
-All persisted timestamps are timezone-aware UTC values. Local display conversion belongs to the consuming application.
-
-### SQLite WAL mode
-
-WAL mode allows a trading platform to read the database while the collector writes to it.
+```powershell
+axetos-market-data aggregate --provider ICMarkets.MT5 --instrument EUR/USD --timeframe 15m
+```
 
 ## Tests
 
-```bash
-pytest
+```powershell
+pytest -q
 ```
 
-## Roadmap
+The test suite currently covers candle creation, storage, provider configuration, and the web API. GitHub Actions runs the suite on every push and pull request.
 
-- Batched MT5 tick retrieval instead of quote polling
-- Historical backfill adapters
-- Gap detection and repair jobs
-- Provider priority and failover
-- PostgreSQL storage adapter
-- Metrics and operational health reporting
+## Project status
 
-## Origin
-
-The project was extracted as a clean, standalone Python implementation from concepts proven in the AxetosOS market-data work. It is intentionally independent of AxetosOS and suitable for public review.
+Version `0.2.0` is an early but runnable Python conversion of the provider supervision, collection, persistence, and management concepts from the original Axetos market-data server. Planned conversion work includes historical MT5 backfill, gap analysis and repair, richer symbol mapping, provider priority/fallback, operational log export, and more extensive data-quality diagnostics.
 
 ## License
 
-MIT
+MIT License. See [LICENSE](LICENSE).

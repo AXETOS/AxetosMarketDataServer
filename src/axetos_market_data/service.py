@@ -15,16 +15,12 @@ class MarketDataService:
         self.builder = CandleBuilder(store)
         self.log = logging.getLogger(__name__)
 
-    def run(self, ticks: Iterable[Tick]) -> None:
+    def run(self, ticks: Iterable[Tick], continuity: str = "CONNECTED") -> None:
         for tick in ticks:
             if self.persist_ticks:
                 self.store.insert_ticks([tick])
-            self.builder.ingest(tick)
+            self.builder.ingest(tick, continuity=continuity)
             self.log.debug(
-                "tick provider=%s instrument=%s timestamp=%s bid=%s ask=%s",
-                tick.provider,
-                tick.instrument,
-                tick.timestamp.isoformat(),
-                tick.bid,
-                tick.ask,
+                "tick provider=%s instrument=%s timestamp=%s bid=%s ask=%s continuity=%s",
+                tick.provider, tick.instrument, tick.timestamp.isoformat(), tick.bid, tick.ask, continuity,
             )

@@ -22,16 +22,17 @@ class _MutableCandle:
     volume: Decimal | None = None
 
     @classmethod
-    def from_tick(cls, tick: Tick) -> "_MutableCandle":
-        price = tick.mid
+    def from_tick(cls, tick: Tick, opening_price: Decimal | None = None) -> "_MutableCandle":
+        first_price = tick.mid
+        open_price = first_price if opening_price is None else opening_price
         return cls(
             provider=tick.provider,
             instrument=tick.instrument,
             open_time=bucket_start(tick.timestamp, "1m"),
-            open=price,
-            high=price,
-            low=price,
-            close=price,
+            open=open_price,
+            high=max(open_price, first_price),
+            low=min(open_price, first_price),
+            close=first_price,
             tick_count=1,
             volume=tick.volume,
         )
@@ -62,28 +63,45 @@ class _MutableCandle:
 
 
 class CandleBuilder:
-    """Builds deterministic one-minute candles from normalized ticks."""
+    """Build one-minute candles while preserving feed-confirmed continuity."""
 
     def __init__(self, store: MarketDataStore) -> None:
         self._store = store
         self._active: dict[tuple[str, str], _MutableCandle] = {}
 
-    def ingest(self, tick: Tick) -> None:
+    def ingest(self, tick: Tick, continuity: str = "CONNECTED") -> None:
+        if continuity not in {"CONNECTED", "DETACHED"}:
+            raise ValueError("continuity must be CONNECTED or DETACHED")
         key = (tick.provider, tick.instrument)
         minute = bucket_start(tick.timestamp, "1m")
         active = self._active.get(key)
         if active is None:
-            self._active[key] = _MutableCandle.from_tick(tick)
+            opening = self._previous_close(tick) if continuity == "CONNECTED" else None
+            self._active[key] = _MutableCandle.from_tick(tick, opening)
             return
         if minute < active.open_time:
             raise ValueError("out-of-order tick belongs to an already finalized minute")
         if minute > active.open_time:
+            previous_close = active.close
             self._store.upsert_candle(active.freeze(complete=True))
-            self._active[key] = _MutableCandle.from_tick(tick)
+            opening = previous_close if continuity == "CONNECTED" else None
+            self._active[key] = _MutableCandle.from_tick(tick, opening)
             return
         active.apply(tick)
+
+    def finalize(self, provider: str, instrument: str, complete: bool = True) -> Candle | None:
+        active = self._active.pop((provider, instrument), None)
+        if active is None:
+            return None
+        candle = active.freeze(complete=complete)
+        self._store.upsert_candle(candle)
+        return candle
 
     def flush(self, complete: bool = False) -> int:
         for candle in self._active.values():
             self._store.upsert_candle(candle.freeze(complete=complete))
         return len(self._active)
+
+    def _previous_close(self, tick: Tick) -> Decimal | None:
+        candles = self._store.read_candles(tick.instrument, "1m", limit=1, provider=tick.provider)
+        return candles[-1].close if candles else None

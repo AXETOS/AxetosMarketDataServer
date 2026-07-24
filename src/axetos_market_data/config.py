@@ -23,6 +23,9 @@ class ProviderConfig:
     maintenance_enabled: bool = False
     maintenance_interval_minutes: int = 60
     maintenance_backfill_days: int = 2
+    feed_quiet_seconds: float = 60.0
+    feed_stalled_seconds: float = 180.0
+    feed_inactive_seconds: float = 600.0
 
     def normalized_symbols(self) -> list[str]:
         # MT5 symbols must be selected through the managed symbol workflow.

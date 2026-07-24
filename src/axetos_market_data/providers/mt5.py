@@ -29,6 +29,7 @@ class MetaTrader5TickProvider:
         self.batch_limit = max(1, batch_limit)
         self.last_batch_sizes: dict[str, int] = {}
         self.symbol_resolver = SymbolResolver(store=store, aliases=symbol_aliases)
+        self._active_mt5 = None
 
     @staticmethod
     def _canonical_symbol(symbol: str) -> str:
@@ -118,6 +119,7 @@ class MetaTrader5TickProvider:
         """
         mt5 = self._module()
         self._initialize(mt5)
+        self._active_mt5 = mt5
         cursors: dict[str, datetime] = {}
         try:
             for symbol in self.symbols:
@@ -161,7 +163,32 @@ class MetaTrader5TickProvider:
                 if not emitted:
                     time.sleep(0.05)
         finally:
+            self._active_mt5 = None
             mt5.shutdown()
+
+    def fetch_candles_live(
+        self, symbol: str, timeframe: str, start: datetime, end: datetime
+    ) -> list[Candle]:
+        """Fetch history through the already-connected MT5 session used by stream()."""
+        mt5 = self._active_mt5
+        if mt5 is None:
+            return self.fetch_candles(symbol, timeframe, start, end)
+        mapping = {
+            "1m": mt5.TIMEFRAME_M1, "5m": mt5.TIMEFRAME_M5,
+            "15m": mt5.TIMEFRAME_M15, "30m": mt5.TIMEFRAME_M30,
+            "1h": mt5.TIMEFRAME_H1, "4h": mt5.TIMEFRAME_H4, "1d": mt5.TIMEFRAME_D1,
+        }
+        rates = mt5.copy_rates_range(symbol, mapping[timeframe], start, end)
+        if rates is None:
+            raise RuntimeError(f"MT5 history request failed for {symbol}: {mt5.last_error()}")
+        return [
+            Candle(
+                self.name, self.symbol_resolver.resolve(self.name, symbol).canonical_instrument, timeframe,
+                datetime.fromtimestamp(int(row["time"]), tz=UTC), Decimal(str(row["open"])),
+                Decimal(str(row["high"])), Decimal(str(row["low"])), Decimal(str(row["close"])),
+                int(row["tick_volume"]), Decimal(str(row["real_volume"])) if row["real_volume"] else None, True,
+            ) for row in rates
+        ]
 
     def fetch_candles(
         self,

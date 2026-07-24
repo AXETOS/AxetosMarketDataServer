@@ -4,9 +4,37 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.25.0
+## Version 0.26.0
 
-Version 0.25.0 adds reproducible Docker deployment for the market-data server and PostgreSQL. The release includes a non-root application image, health checks, persistent named volumes, restart policies, environment-driven configuration, and a Docker Compose stack suitable for local evaluation and deployment hardening.
+Version 0.26.0 adds feed-derived market-state intelligence and feed-aware candle continuity. The server now separates provider connectivity from market-feed activity, ignores unchanged quote observations as market ticks, continues monitoring MT5 while a feed is inactive, investigates missing intervals when movement resumes, and connects candle opens to the previous close only when feed evidence confirms continuity.
+
+## Feed-derived market status and candle continuity
+
+The server does not assume that a market is open or closed solely from a calendar. Each provider/instrument feed is classified from received quote behavior:
+
+```text
+INITIALIZING → LIVE → QUIET → STALLED → INACTIVE
+                              ↓
+                         RECOVERING → LIVE
+```
+
+The default thresholds are 60 seconds for `QUIET`, 180 seconds for `STALLED`, and 600 seconds for `INACTIVE`. They are configurable per provider. `INACTIVE` never stops the MT5 worker: the terminal remains connected and monitored so genuine price movement is detected immediately when the market or instrument becomes active again.
+
+Identical bid/ask observations are counted diagnostically but are not persisted as genuine market ticks and do not create flat candles. When movement resumes after a stalled or inactive interval, the server requests one-minute history for the missing window. Meaningful historical candles are imported; empty or flat-only history is classified as an inactive interval and is left without synthetic candles.
+
+Candle continuity follows the feed conclusion:
+
+- Continuous feed: the new candle opens at the previous candle close, and that opening value participates in high/low.
+- Repaired active interval: recovered candles establish continuity before the live candle resumes.
+- Closed, inactive, or otherwise unverified interval: the new candle opens at the first genuine resumed price, preserving real gaps such as stock premarket/regular-session jumps and weekend FX gaps.
+
+Inspect the current report through:
+
+```text
+GET /api/feed-status
+```
+
+The management UI shows the current state, unchanged duration, accepted market ticks, ignored unchanged observations, recovery attempts, and repaired candle count.
 
 ## Storage backends
 
@@ -277,7 +305,7 @@ The test suite covers candle creation, storage, provider configuration, historic
 
 ## Docker deployment
 
-Version 0.25.0 includes a production-oriented container image and a Docker Compose stack with PostgreSQL. Copy the environment template, replace the example password and tokens, then start the stack:
+Version 0.25.0 introduced a production-oriented container image and a Docker Compose stack with PostgreSQL. Copy the environment template, replace the example password and tokens, then start the stack:
 
 ```powershell
 Copy-Item .env.example .env

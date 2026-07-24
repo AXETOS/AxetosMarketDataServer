@@ -13,6 +13,7 @@ from .service import MarketDataService
 from .routing import ProviderAuthorityRegistry
 from .maintenance import ProviderMaintenanceWorker
 from .storage import MarketDataStore
+from .operational import OperationalEventService
 
 
 @dataclass(slots=True)
@@ -37,6 +38,7 @@ class ProviderWorker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.log = logging.getLogger(f"provider.{config.provider_key}")
+        self.events = OperationalEventService(store)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -44,12 +46,14 @@ class ProviderWorker:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name=self.config.provider_key)
         self._thread.start()
+        self.events.record("info", "provider.start", "Provider start requested", provider=self.config.provider_key, details={"kind": self.config.kind})
 
     def stop(self) -> None:
         self._stop.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=5)
         self.runtime.status = "Stopped"
+        self.events.record("info", "provider.stop", "Provider stopped", provider=self.config.provider_key)
 
     def _provider(self):
         symbols = self.config.normalized_symbols()
@@ -70,6 +74,7 @@ class ProviderWorker:
         try:
             provider = self._provider()
             self.runtime.status = "Live"
+            self.events.record("info", "provider.recovery", "Provider is live", provider=self.config.provider_key, details={"kind": self.config.kind})
             for tick in provider.stream():
                 if self._stop.is_set():
                     break
@@ -88,6 +93,7 @@ class ProviderWorker:
             self.runtime.status = "Failed"
             self.runtime.last_error = str(exc)
             self.log.exception("Provider worker failed")
+            self.events.record("error", "provider.failure", "Provider worker failed", provider=self.config.provider_key, details={"error": str(exc), "kind": self.config.kind})
         finally:
             if self.runtime.status != "Failed":
                 self.runtime.status = "Stopped"
@@ -163,6 +169,7 @@ class ProviderSupervisor:
         if worker is None:
             raise KeyError(provider_key)
         if action in {"start", "reconnect", "restart"}:
+            worker.events.record("info", f"provider.{action}", f"Provider {action} requested", provider=provider_key)
             worker.stop()
             worker.start()
         elif action == "stop":

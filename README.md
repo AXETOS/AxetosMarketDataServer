@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.12.0
+## Version 0.13.0
 
-Version 0.10.0 adds persistent symbol policies, deterministic canonical-source selection, and provider connection testing. Provider symbols can be enabled independently for live and historical collection, assigned canonical instruments, and given priority overrides without blending feeds.
+Version 0.13.0 adds a persistent structured operational event journal. Provider lifecycle and connection tests, historical backfills, gap and repair workflows, candle-quality scans, quarantine and rebuild actions, retention cleanup, and database integrity checks now produce queryable events with severity, category, provider, instrument, timestamp, message, and JSON details. The management UI includes a paginated operational-log viewer, while `GET /api/operational-events` supports filtering and pagination.
 
 ## Operational diagnostics
 
@@ -47,7 +47,7 @@ GET /metrics
 - Graceful shutdown with active candles stored as incomplete
 - Automated tests through GitHub Actions
 - Database integrity checks and retention previews
-- Safe cleanup of old raw ticks and operational history
+- Safe cleanup of old raw ticks and operational history, including structured operational events
 - WAL checkpointing, optional SQLite compaction, and cleanup audit history
 
 ## MT5 bridge compatibility
@@ -204,6 +204,25 @@ pytest -q
 ```
 
 The test suite covers candle creation, storage, provider configuration, historical backfill, gap repair, and the web API. GitHub Actions runs it on every push and pull request.
+
+## Commit and push changes
+
+After testing a completed change, review the working tree, stage the project files, create a descriptive commit, and push the current branch:
+
+```powershell
+git status
+git add .
+git commit -m "Add persistent operational event journal"
+git push
+```
+
+Use a commit message that describes the actual change. For example, the earlier market-calendar and Yahoo-fallback release could use:
+
+```powershell
+git commit -m "Add market calendar and Yahoo historical fallback"
+```
+
+Before `git add .`, check `git status` and confirm that generated databases, virtual environments, caches, secrets, and local configuration files are not being committed. The included `.gitignore` excludes the standard generated project files.
 
 ## Roadmap
 

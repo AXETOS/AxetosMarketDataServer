@@ -6,6 +6,7 @@ from decimal import Decimal
 
 from .domain import Candle
 from .storage import MarketDataStore, _iso
+from .operational import OperationalEventService
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +21,7 @@ class CandleQualityService:
 
     def __init__(self, store: MarketDataStore) -> None:
         self.store = store
+        self.events = OperationalEventService(store)
 
     def scan(self, provider: str | None = None, instrument: str | None = None,
              timeframe: str | None = None, limit: int = 10000,
@@ -62,7 +64,9 @@ class CandleQualityService:
                     )
                     issues += 1
                     severe += severity == "severe"
-        return QualityScanResult(len(rows), issues, severe)
+        result = QualityScanResult(len(rows), issues, severe)
+        self.events.record("warning" if issues else "info", "quality.scan", "Candle quality scan completed", provider=provider, instrument=instrument, details={"timeframe": timeframe, "scanned": result.scanned, "issues": result.issues, "severe": result.severe})
+        return result
 
     def list_issues(self, limit: int = 500, action: str | None = None) -> list[dict[str, object]]:
         query = "SELECT * FROM candle_quality_issues"
@@ -98,6 +102,7 @@ class CandleQualityService:
                 (candle["provider"], candle["instrument"], candle["timeframe"], candle["open_time_utc"]),
             )
             connection.execute("UPDATE candle_quality_issues SET action='quarantined' WHERE id=?", (issue_id,))
+        self.events.record("warning", "quality.quarantine", "Candle quarantined", provider=str(issue["provider"]), instrument=str(issue["instrument"]), details={"issue_id": issue_id, "timeframe": issue["timeframe"], "open_time_utc": issue["open_time_utc"], "reason": issue["reason"]})
         return {"issue_id": issue_id, "quarantined": True}
 
     def rebuild_one_minute(self, issue_id: int) -> dict[str, object]:
@@ -127,4 +132,5 @@ class CandleQualityService:
                 "UPDATE candle_quality_issues SET action='rebuilt',resolved_utc=? WHERE id=?",
                 (_iso(datetime.now(UTC)), issue_id),
             )
+        self.events.record("info", "quality.rebuild", "One-minute candle rebuilt from ticks", provider=str(issue["provider"]), instrument=str(issue["instrument"]), details={"issue_id": issue_id, "tick_count": len(prices), "open_time_utc": issue["open_time_utc"]})
         return {"issue_id": issue_id, "rebuilt": True, "tick_count": len(prices)}

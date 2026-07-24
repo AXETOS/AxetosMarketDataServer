@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from .storage import MarketDataStore
+from .operational import OperationalEventService
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,7 @@ class RetentionPolicy:
 class HousekeepingService:
     def __init__(self, store: MarketDataStore) -> None:
         self.store = store
+        self.events = OperationalEventService(store)
 
     def preview(self, policy: RetentionPolicy, now: datetime | None = None) -> dict[str, object]:
         ticks_before, operational_before = policy.cutoffs(now)
@@ -40,4 +42,8 @@ class HousekeepingService:
         now: datetime | None = None,
     ) -> dict[str, object]:
         ticks_before, operational_before = policy.cutoffs(now)
-        return self.store.run_retention(ticks_before, operational_before, vacuum)
+        result = self.store.run_retention(ticks_before, operational_before, vacuum)
+        events_deleted = self.store.delete_operational_events_before(operational_before)
+        result["operational_events_deleted"] = events_deleted
+        self.events.record("info", "retention.completed", "Retention cleanup completed", details={**result, "vacuum": vacuum})
+        return result

@@ -146,6 +146,20 @@ CREATE TABLE IF NOT EXISTS quarantined_candles (
 CREATE INDEX IF NOT EXISTS ix_quarantined_candles_lookup
 ON quarantined_candles(provider, instrument, timeframe, open_time_utc);
 
+CREATE TABLE IF NOT EXISTS operational_events (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ severity TEXT NOT NULL,
+ category TEXT NOT NULL,
+ provider TEXT NULL,
+ instrument TEXT NULL,
+ message TEXT NOT NULL,
+ timestamp_utc TEXT NOT NULL,
+ details_json TEXT NOT NULL DEFAULT '{}',
+ CHECK(severity IN ('debug','info','warning','error','critical'))
+);
+CREATE INDEX IF NOT EXISTS ix_operational_events_timestamp ON operational_events(timestamp_utc DESC, id DESC);
+CREATE INDEX IF NOT EXISTS ix_operational_events_filter ON operational_events(category, severity, provider, instrument, timestamp_utc DESC);
+
 CREATE TABLE IF NOT EXISTS mt5_bridge_heartbeats (
  provider_key TEXT NOT NULL, terminal_instance_id TEXT NOT NULL, broker_name TEXT NULL,
  server_name TEXT NULL, account_login INTEGER NULL, source_time_utc TEXT NOT NULL,
@@ -190,6 +204,59 @@ class MarketDataStore:
     def initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(_SCHEMA)
+
+
+    def record_operational_event(self, severity: str, category: str, provider: str | None,
+                                 instrument: str | None, message: str, timestamp: datetime,
+                                 details_json: str = "{}") -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """INSERT INTO operational_events(severity,category,provider,instrument,message,timestamp_utc,details_json)
+                VALUES(?,?,?,?,?,?,?)""",
+                (severity, category, provider, instrument, message, _iso(timestamp), details_json),
+            )
+            return int(cursor.lastrowid)
+
+    def list_operational_events(self, *, page: int = 1, page_size: int = 50,
+                                severity: str | None = None, category: str | None = None,
+                                provider: str | None = None, instrument: str | None = None,
+                                search: str | None = None, from_utc: datetime | None = None,
+                                to_utc: datetime | None = None) -> dict[str, object]:
+        import json
+        page = max(1, int(page)); page_size = max(1, min(500, int(page_size)))
+        where = ["1=1"]; args: list[object] = []
+        for column, value in (("severity", severity), ("category", category),
+                              ("provider", provider), ("instrument", instrument)):
+            if value:
+                where.append(f"{column}=?"); args.append(value)
+        if search:
+            where.append("(message LIKE ? OR details_json LIKE ?)")
+            token = f"%{search}%"; args.extend((token, token))
+        if from_utc:
+            where.append("timestamp_utc>=?"); args.append(_iso(from_utc))
+        if to_utc:
+            where.append("timestamp_utc<=?"); args.append(_iso(to_utc))
+        clause = " AND ".join(where)
+        with self.connect() as connection:
+            total = int(connection.execute(f"SELECT COUNT(*) FROM operational_events WHERE {clause}", args).fetchone()[0])
+            rows = connection.execute(
+                f"SELECT * FROM operational_events WHERE {clause} ORDER BY timestamp_utc DESC,id DESC LIMIT ? OFFSET ?",
+                [*args, page_size, (page-1)*page_size],
+            ).fetchall()
+        items=[]
+        for row in rows:
+            item=dict(row)
+            try: item["details"] = json.loads(str(item.pop("details_json")))
+            except json.JSONDecodeError: item["details"] = {"raw": item.pop("details_json", "")}
+            items.append(item)
+        return {"page": page, "page_size": page_size, "total": total,
+                "pages": (total + page_size - 1) // page_size, "items": items}
+
+    def delete_operational_events_before(self, cutoff: datetime) -> int:
+        with self.connect() as connection:
+            before = connection.total_changes
+            connection.execute("DELETE FROM operational_events WHERE timestamp_utc<?", (_iso(cutoff),))
+            return connection.total_changes - before
 
     def insert_ticks(self, ticks: Iterable[Tick]) -> int:
         rows = [

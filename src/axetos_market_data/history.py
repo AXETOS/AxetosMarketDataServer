@@ -8,6 +8,7 @@ from typing import Protocol
 from .domain import Candle
 from .calendar import MarketCalendar
 from .storage import MarketDataStore
+from .operational import OperationalEventService
 from .timeframes import bucket_start
 
 
@@ -58,6 +59,7 @@ class HistoricalBackfillService:
         self.store = store
         self.calendar = calendar or MarketCalendar()
         self.log = logging.getLogger(__name__)
+        self.events = OperationalEventService(store)
 
     def run(
         self,
@@ -79,6 +81,7 @@ class HistoricalBackfillService:
             len(candles), written, invalid, "Completed", None,
         )
         gaps = self.detect_gaps(provider_key, instrument, timeframe, start, end)
+        self.events.record("info", "backfill.completed", "Historical backfill completed", provider=provider_key, instrument=instrument, details={"timeframe": timeframe, "received": len(candles), "written": written, "invalid": invalid, "gaps": gaps})
         return BackfillResult(
             provider_key, instrument, timeframe, start.isoformat(), end.isoformat(),
             len(candles), written, invalid, gaps,
@@ -107,6 +110,7 @@ class HistoricalBackfillService:
                 )
                 gaps += 1
             cursor += timedelta(seconds=seconds)
+        self.events.record("warning" if gaps else "info", "gap.scan", "Candle gap scan completed", provider=provider, instrument=instrument, details={"timeframe": timeframe, "start_utc": start.isoformat(), "end_utc": end.isoformat(), "gaps": gaps})
         return gaps
 
     def repair_gaps(
@@ -188,6 +192,7 @@ class HistoricalBackfillService:
             gaps_remaining=remaining,
         )
         self.store.record_repair_run(result)
+        self.events.record("warning" if remaining else "info", "gap.repair", "Gap repair completed", provider=provider_key, instrument=instrument, details={name: getattr(result, name) for name in result.__slots__})
         return result
 
     @staticmethod

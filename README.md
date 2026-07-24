@@ -148,8 +148,21 @@ The test suite currently covers candle creation, storage, provider configuration
 
 ## Project status
 
-Version `0.2.0` is an early but runnable Python conversion of the provider supervision, collection, persistence, and management concepts from the original Axetos market-data server. Planned conversion work includes historical MT5 backfill, gap analysis and repair, richer symbol mapping, provider priority/fallback, operational log export, and more extensive data-quality diagnostics.
+Version `0.3.0` is an early but runnable Python conversion of the provider supervision, collection, persistence, and management concepts from the original Axetos market-data server. Historical MT5 backfill and gap analysis are now implemented. Planned conversion work includes automated gap repair, richer symbol mapping, provider priority/fallback, operational log export, and more extensive data-quality diagnostics.
 
 ## License
 
 MIT License. See [LICENSE](LICENSE).
+
+## Version 0.3.0 historical data pipeline
+
+Version 0.3.0 adds resumable MT5 historical candle backfill, persistent ingestion status,
+OHLC validation, duplicate-safe upserts, and weekday gap detection. The control center can
+start a seven-day one-minute backfill for an MT5 provider, while the REST API supports custom
+symbols, instruments, timeframes, and history ranges.
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/api/backfill` | Import MT5 historical candles and run validation/gap analysis |
+| `GET` | `/api/backfill/state` | Inspect persisted backfill results and failures |
+| `GET` | `/api/gaps` | Inspect unresolved weekday candle gaps |

@@ -46,6 +46,22 @@ CREATE TABLE IF NOT EXISTS candles (
 
 CREATE INDEX IF NOT EXISTS ix_candles_lookup
 ON candles(instrument, timeframe, open_time_utc);
+
+CREATE TABLE IF NOT EXISTS ingestion_state (
+ provider TEXT NOT NULL, instrument TEXT NOT NULL, timeframe TEXT NOT NULL,
+ requested_from_utc TEXT NOT NULL, requested_to_utc TEXT NOT NULL,
+ received INTEGER NOT NULL, written INTEGER NOT NULL, invalid INTEGER NOT NULL,
+ status TEXT NOT NULL, error TEXT NULL, updated_utc TEXT NOT NULL,
+ PRIMARY KEY(provider, instrument, timeframe)
+);
+
+CREATE TABLE IF NOT EXISTS data_gaps (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, instrument TEXT NOT NULL,
+ timeframe TEXT NOT NULL, gap_from_utc TEXT NOT NULL, gap_to_utc TEXT NOT NULL,
+ detected_utc TEXT NOT NULL, resolved INTEGER NOT NULL DEFAULT 0,
+ UNIQUE(provider, instrument, timeframe, gap_from_utc)
+);
+CREATE INDEX IF NOT EXISTS ix_gaps_lookup ON data_gaps(resolved, provider, instrument, timeframe);
 """
 
 
@@ -130,6 +146,41 @@ class MarketDataStore:
                 ),
             )
 
+
+    def upsert_candles(self, candles: Iterable[Candle]) -> int:
+        count = 0
+        for candle in candles:
+            self.upsert_candle(candle)
+            count += 1
+        return count
+
+    def read_candle_times(self, provider: str, instrument: str, timeframe: str, start: datetime, end: datetime) -> list[datetime]:
+        with self.connect() as connection:
+            rows = connection.execute("SELECT open_time_utc FROM candles WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc>=? AND open_time_utc<?", (provider, instrument, timeframe, _iso(start), _iso(end))).fetchall()
+        return [datetime.fromisoformat(row[0]) for row in rows]
+
+    def set_ingestion_state(self, provider: str, instrument: str, timeframe: str, start: datetime, end: datetime, received: int, written: int, invalid: int, status: str, error: str | None) -> None:
+        with self.connect() as connection:
+            connection.execute("""INSERT INTO ingestion_state VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider,instrument,timeframe) DO UPDATE SET requested_from_utc=excluded.requested_from_utc,requested_to_utc=excluded.requested_to_utc,received=excluded.received,written=excluded.written,invalid=excluded.invalid,status=excluded.status,error=excluded.error,updated_utc=excluded.updated_utc""", (provider,instrument,timeframe,_iso(start),_iso(end),received,written,invalid,status,error,_iso(datetime.now().astimezone())))
+
+    def list_ingestion_state(self) -> list[dict[str, object]]:
+        with self.connect() as connection:
+            rows=connection.execute("SELECT * FROM ingestion_state ORDER BY updated_utc DESC").fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_gaps(self, provider: str, instrument: str, timeframe: str, start: datetime, end: datetime) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM data_gaps WHERE provider=? AND instrument=? AND timeframe=? AND gap_from_utc>=? AND gap_from_utc<?", (provider,instrument,timeframe,_iso(start),_iso(end)))
+
+    def record_gap(self, provider: str, instrument: str, timeframe: str, start: datetime, end: datetime) -> None:
+        with self.connect() as connection:
+            connection.execute("INSERT OR IGNORE INTO data_gaps(provider,instrument,timeframe,gap_from_utc,gap_to_utc,detected_utc,resolved) VALUES(?,?,?,?,?,?,0)", (provider,instrument,timeframe,_iso(start),_iso(end),_iso(datetime.now().astimezone())))
+
+    def list_gaps(self, limit: int = 500) -> list[dict[str, object]]:
+        with self.connect() as connection:
+            rows=connection.execute("SELECT * FROM data_gaps WHERE resolved=0 ORDER BY gap_from_utc DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
     def read_candles(
         self,
         instrument: str,
@@ -177,6 +228,7 @@ class MarketDataStore:
             instruments = int(connection.execute("SELECT COUNT(DISTINCT instrument) FROM candles").fetchone()[0])
             latest_tick = connection.execute("SELECT MAX(timestamp_utc) FROM ticks").fetchone()[0]
             latest_candle = connection.execute("SELECT MAX(open_time_utc) FROM candles").fetchone()[0]
+            gaps = int(connection.execute("SELECT COUNT(*) FROM data_gaps WHERE resolved=0").fetchone()[0])
         return {
             "ticks": ticks,
             "candles": candles,
@@ -184,6 +236,7 @@ class MarketDataStore:
             "latest_tick_utc": latest_tick,
             "latest_candle_utc": latest_candle,
             "database_path": str(self.database_path),
+            "unresolved_gaps": gaps,
         }
 
     def list_instruments(self) -> list[str]:

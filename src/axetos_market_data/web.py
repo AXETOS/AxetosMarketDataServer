@@ -27,6 +27,7 @@ from .policies import choose_canonical_source
 from .quality import CandleQualityService
 from .operational import OperationalEventService
 from .symbols import SymbolResolver, normalize_instrument
+from .security import SecuritySettings, install_security_middleware
 from .bridge import (Mt5BridgeService, BridgeHeartbeatRequest, BridgeInstrumentsRequest, BridgeTicksRequest, BridgeQuotesRequest, BridgeCandlesRequest, InstrumentSelectionRequest)
 
 
@@ -126,12 +127,16 @@ def create_app(
         supervisor.shutdown()
         bridge.shutdown()
 
+    security = SecuritySettings.from_environment()
+
     app = FastAPI(
         title="Axetos Market Data Server",
         version=__version__,
         description="Collects market ticks, builds OHLC candles, and stores market data.",
         lifespan=lifespan,
     )
+    install_security_middleware(app, security)
+    app.state.security = security
     app.state.store = store
     app.state.supervisor = supervisor
     housekeeping = HousekeepingService(store)
@@ -148,6 +153,10 @@ def create_app(
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def dashboard() -> str:
         return CONTROL_CENTER_HTML
+
+    @app.get("/api/auth/status")
+    def auth_status() -> dict[str, object]:
+        return {"enabled": security.enabled, "management_roles": ["viewer", "operator", "administrator"], "bridge_authentication": security.enabled}
 
     @app.get("/api/health")
     def health() -> dict[str, object]:

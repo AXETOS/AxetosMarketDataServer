@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.16.0
+## Version 0.17.0
 
-Version 0.16.0 adds persistent scheduled retention and maintenance. Retention schedules are stored in SQLite, survive restarts, execute automatically in a background scheduler, and retain run status, results, errors, last-run time, and next-run time. Operators can create or update schedules, trigger them immediately, and inspect execution history through the management API.
+Version 0.17.0 adds persistent scheduled retention and maintenance. Retention schedules are stored in SQLite, survive restarts, execute automatically in a background scheduler, and retain run status, results, errors, last-run time, and next-run time. Operators can create or update schedules, trigger them immediately, and inspect execution history through the management API.
 
 ## Operational diagnostics
 
@@ -256,3 +256,28 @@ ICMarkets.MT5  priority 10  primary
 Oanda.MT5      priority 20  secondary
 Fallback       priority 90  last resort
 ```
+
+## Authentication and role-based access
+
+Authentication is disabled by default for local development. Enable it with environment variables before starting the server:
+
+```powershell
+$env:AXETOS_AUTH_ENABLED="true"
+$env:AXETOS_VIEWER_TOKEN="replace-with-a-long-random-viewer-token"
+$env:AXETOS_OPERATOR_TOKEN="replace-with-a-long-random-operator-token"
+$env:AXETOS_ADMIN_TOKEN="replace-with-a-long-random-administrator-token"
+$env:AXETOS_BRIDGE_TOKEN="replace-with-a-separate-long-random-bridge-token"
+axetos-market-data-server
+```
+
+Management clients may send a token as `Authorization: Bearer <token>`, `X-API-Key: <token>`, or as the password in HTTP Basic authentication. HTTP Basic support allows a browser to open the management UI using its normal credential prompt; the username is informational and the password must be a configured management token.
+
+Roles are cumulative:
+
+- **Viewer** can read health, metrics, providers, candles, routing, quality results, and operational history.
+- **Operator** includes Viewer access and can start or stop providers, run connection tests, backfills, scans, repairs, rebuilds, and maintenance jobs.
+- **Administrator** includes Operator access and can alter provider configuration, symbol policies, retention schedules, and destructive resources.
+
+The MT5 ingestion endpoints use only `AXETOS_BRIDGE_TOKEN`. A management token cannot ingest bridge data, and the bridge token does not grant management access. Send it with `X-API-Key` or `Authorization: Bearer`.
+
+`GET /api/health`, `/metrics`, and API documentation remain available without credentials for monitoring and service discovery. Do not expose the server directly to the public internet; terminate TLS at a trusted reverse proxy and store all tokens in a secret manager or protected environment configuration.

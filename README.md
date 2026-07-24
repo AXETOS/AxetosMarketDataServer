@@ -279,7 +279,6 @@ The test suite covers candle creation, storage, provider configuration, historic
 - PostgreSQL integration tests in CI using an ephemeral service database
 - Automated backup and restore commands
 - Deployment packaging with Docker and health-checked PostgreSQL
-- Alert delivery for provider failures and data-quality incidents
 - Load and endurance benchmarks for sustained tick ingestion
 
 ## Candle quality and recovery
@@ -296,6 +295,26 @@ POST /api/quality/issues/{issue_id}/rebuild
 ```
 
 Original quarantined values remain in `quarantined_candles` for auditability.
+
+## Operational alert webhooks
+
+Version 0.23.0 can deliver structured JSON alerts to a generic webhook when important operational events occur. Configure the destination through environment variables; webhook URLs are never stored in the project files or management database.
+
+```powershell
+$env:AXETOS_ALERT_WEBHOOK_URL="https://monitoring.example.com/hooks/axetos"
+$env:AXETOS_ALERT_MIN_SEVERITY="error"
+$env:AXETOS_ALERT_COOLDOWN_SECONDS="60"
+axetos-market-data-server
+```
+
+By default, provider failures and recovery, failed connection tests, failed maintenance, quality incidents, failed backfills, and database-integrity failures are eligible for delivery. Override the category set with `AXETOS_ALERT_CATEGORIES` as a comma-separated list. Repeated identical alerts are suppressed during the configured cooldown.
+
+The webhook receives the event ID, version, severity, category, provider, canonical instrument, message, UTC timestamp, and structured details. Delivery success or failure is written back to the operational journal.
+
+```text
+GET  /api/alerts/status
+POST /api/alerts/test
+```
 
 ## License
 

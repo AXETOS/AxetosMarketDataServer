@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .storage import MarketDataStore
+from .alerts import WebhookAlertDispatcher, build_alert_payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,8 +23,9 @@ class OperationalEvent:
 class OperationalEventService:
     """Persistent structured operational event journal."""
 
-    def __init__(self, store: MarketDataStore) -> None:
+    def __init__(self, store: MarketDataStore, dispatcher: WebhookAlertDispatcher | None = None) -> None:
         self.store = store
+        self.dispatcher = dispatcher or WebhookAlertDispatcher()
 
     def record(
         self,
@@ -43,15 +45,36 @@ class OperationalEventService:
             raise ValueError("Event category is required")
         if not message.strip():
             raise ValueError("Event message is required")
-        return self.store.record_operational_event(
+        normalized_category = category.strip().lower()
+        normalized_message = message.strip()
+        event_timestamp = timestamp or datetime.now(UTC)
+        event_id = self.store.record_operational_event(
             normalized_severity,
-            category.strip().lower(),
+            normalized_category,
             provider,
             instrument,
-            message.strip(),
-            timestamp or datetime.now(UTC),
+            normalized_message,
+            event_timestamp,
             json.dumps(details or {}, sort_keys=True, separators=(",", ":"), default=str),
         )
+        try:
+            result = self.dispatcher.deliver(build_alert_payload(
+                event_id, normalized_severity, normalized_category, normalized_message,
+                event_timestamp, provider, instrument, details,
+            ))
+            if result.get("delivered"):
+                self.store.record_operational_event(
+                    "info", "alert.delivered", provider, instrument,
+                    "Operational alert delivered", datetime.now(UTC),
+                    json.dumps({"source_event_id": event_id, **result}, sort_keys=True, separators=(",", ":")),
+                )
+        except Exception as exc:
+            self.store.record_operational_event(
+                "error", "alert.delivery_failed", provider, instrument,
+                "Operational alert delivery failed", datetime.now(UTC),
+                json.dumps({"source_event_id": event_id, "error": str(exc)}, sort_keys=True, separators=(",", ":")),
+            )
+        return event_id
 
     def list(self, **filters: object) -> dict[str, object]:
         return self.store.list_operational_events(**filters)

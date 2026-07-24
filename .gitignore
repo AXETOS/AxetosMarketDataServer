@@ -12,3 +12,5 @@ venv/
 *.sqlite-shm
 build/
 dist/
+
+data/

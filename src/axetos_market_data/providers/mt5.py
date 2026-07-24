@@ -20,6 +20,7 @@ class MetaTrader5TickProvider:
         batch_window_seconds: int = 5,
         batch_limit: int = 50_000,
         symbol_aliases: dict[str, str] | None = None,
+        store=None,
     ) -> None:
         self.symbols = symbols
         self.terminal_path = terminal_path
@@ -27,7 +28,7 @@ class MetaTrader5TickProvider:
         self.batch_window_seconds = max(1, batch_window_seconds)
         self.batch_limit = max(1, batch_limit)
         self.last_batch_sizes: dict[str, int] = {}
-        self.symbol_resolver = SymbolResolver(aliases=symbol_aliases)
+        self.symbol_resolver = SymbolResolver(store=store, aliases=symbol_aliases)
 
     @staticmethod
     def _canonical_symbol(symbol: str) -> str:
@@ -71,6 +72,41 @@ class MetaTrader5TickProvider:
                 "server": getattr(account, "server", None) if account else None,
                 "symbols": symbols,
             }
+        finally:
+            mt5.shutdown()
+
+
+    def discover_symbols(self, search: str | None = None, limit: int = 5000) -> list[dict[str, object]]:
+        """Discover broker symbols from the connected MT5 terminal."""
+        mt5 = self._module()
+        self._initialize(mt5)
+        try:
+            rows = mt5.symbols_get()
+            if rows is None:
+                raise RuntimeError(f"MT5 symbol discovery failed: {mt5.last_error()}")
+            needle = (search or "").strip().upper()
+            result: list[dict[str, object]] = []
+            for row in rows:
+                name = str(getattr(row, "name", "") or "")
+                description = str(getattr(row, "description", "") or "")
+                if not name:
+                    continue
+                if needle and needle not in name.upper() and needle not in description.upper():
+                    continue
+                resolution = self.symbol_resolver.resolve(self.name, name)
+                result.append({
+                    "provider_symbol": name,
+                    "description": description,
+                    "canonical_instrument": resolution.canonical_instrument,
+                    "mapping_source": resolution.source,
+                    "visible": bool(getattr(row, "visible", False)),
+                    "selected": bool(getattr(row, "select", False)),
+                    "digits": getattr(row, "digits", None),
+                    "path": getattr(row, "path", None),
+                })
+                if len(result) >= max(1, limit):
+                    break
+            return result
         finally:
             mt5.shutdown()
 

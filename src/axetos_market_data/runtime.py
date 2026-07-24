@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 
 from .config import ConfigurationStore, ProviderConfig
@@ -14,6 +14,7 @@ from .routing import ProviderAuthorityRegistry
 from .maintenance import ProviderMaintenanceWorker
 from .storage import MarketDataStore
 from .operational import OperationalEventService
+from .symbols import SymbolResolver
 
 
 @dataclass(slots=True)
@@ -62,7 +63,7 @@ class ProviderWorker:
         if self.config.kind.lower() == "mt5":
             return MetaTrader5TickProvider(
                 symbols, self.config.terminal_path, self.config.provider_key,
-                self.config.batch_window_seconds, self.config.batch_limit, self.config.symbol_aliases,
+                self.config.batch_window_seconds, self.config.batch_limit, self.config.symbol_aliases, self.store,
             )
         return MockTickProvider(symbols[0], self.config.poll_interval_seconds, provider=self.config.provider_key)
 
@@ -111,10 +112,14 @@ class ProviderSupervisor:
         self.authority = ProviderAuthorityRegistry()
         self._lock = threading.RLock()
 
+    def _routing_configs(self, configs: list[ProviderConfig]) -> list[ProviderConfig]:
+        resolver = SymbolResolver(self.data_store)
+        return [replace(config, symbols=[resolver.resolve(config.provider_key, symbol).canonical_instrument for symbol in config.normalized_symbols()]) for config in configs]
+
     def load(self) -> None:
         with self._lock:
             configs = self.config_store.read_all()
-            self.authority.replace_configs(configs)
+            self.authority.replace_configs(self._routing_configs(configs))
             for config in configs:
                 self._workers[config.provider_key] = ProviderWorker(config, self.data_store, self.authority)
                 if config.kind.lower() == "mt5" and config.maintenance_enabled:
@@ -153,7 +158,7 @@ class ProviderSupervisor:
             if old_maintenance:
                 old_maintenance.stop()
             self.config_store.upsert(config)
-            self.authority.replace_configs(self.config_store.read_all())
+            self.authority.replace_configs(self._routing_configs(self.config_store.read_all()))
             worker = ProviderWorker(config, self.data_store, self.authority)
             self._workers[config.provider_key] = worker
             if config.kind.lower() == "mt5" and config.maintenance_enabled:
@@ -177,7 +182,7 @@ class ProviderSupervisor:
         elif action == "enable":
             worker.config.enabled = True
             self.config_store.upsert(worker.config)
-            self.authority.replace_configs(self.config_store.read_all())
+            self.authority.replace_configs(self._routing_configs(self.config_store.read_all()))
             worker.start()
         elif action == "maintenance":
             maintenance = self._maintenance.get(provider_key)
@@ -187,7 +192,7 @@ class ProviderSupervisor:
         elif action == "disable":
             worker.config.enabled = False
             self.config_store.upsert(worker.config)
-            self.authority.replace_configs(self.config_store.read_all())
+            self.authority.replace_configs(self._routing_configs(self.config_store.read_all()))
             worker.stop()
         else:
             raise ValueError(f"Unsupported action: {action}")
@@ -203,5 +208,5 @@ class ProviderSupervisor:
             if maintenance:
                 maintenance.stop()
             removed = self.config_store.delete(provider_key)
-            self.authority.replace_configs(self.config_store.read_all())
+            self.authority.replace_configs(self._routing_configs(self.config_store.read_all()))
             return removed

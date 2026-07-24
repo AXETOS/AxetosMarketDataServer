@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.19.0
+## Version 0.20.0
 
-Version 0.19.0 adds a database-backend abstraction and optional PostgreSQL storage. SQLite remains the default for local development and compact deployments, while PostgreSQL can be selected with `AXETOS_DATABASE_URL` for installations that need a dedicated database server and more concurrent consumers.
+Version 0.20.0 adds a database-backend abstraction and optional PostgreSQL storage. SQLite remains the default for local development and compact deployments, while PostgreSQL can be selected with `AXETOS_DATABASE_URL` for installations that need a dedicated database server and more concurrent consumers.
 
 ## Storage backends
 
@@ -345,3 +345,9 @@ Roles are cumulative:
 The MT5 ingestion endpoints use only `AXETOS_BRIDGE_TOKEN`. A management token cannot ingest bridge data, and the bridge token does not grant management access. Send it with `X-API-Key` or `Authorization: Bearer`.
 
 `GET /api/health`, `/metrics`, and API documentation remain available without credentials for monitoring and service discovery. Do not expose the server directly to the public internet; terminate TLS at a trusted reverse proxy and store all tokens in a secret manager or protected environment configuration.
+
+## Managed MT5 symbols
+
+Version 0.20.0 adds a dedicated MT5 symbol-management workflow. The management UI can discover symbols from the configured terminal, show broker descriptions, propose canonical Axetos instruments, and persist each mapping as Confirmed, Needs review, or Ignored. Provider symbols remain separate from canonical instruments: MT5 receives broker names such as `EURUSD.pro`, while storage, routing, candles, APIs, and streams use `EUR/USD`.
+
+Automatic guesses are intentionally disabled until reviewed. This prevents ambiguous broker CFDs from entering the authoritative market-data catalog.

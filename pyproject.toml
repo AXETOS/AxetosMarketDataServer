@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "axetos-market-data-server"
-version = "0.36.0"
+version = "0.37.0"
 description = "Provider-agnostic financial market-data collector and candle store."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -4,6 +4,23 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.37.0
+
+Version 0.37.0 adds production-friendly secret-file loading for every API authentication credential. Operators can set `AXETOS_VIEWER_TOKEN_FILE`, `AXETOS_OPERATOR_TOKEN_FILE`, `AXETOS_ADMIN_TOKEN_FILE`, or `AXETOS_BRIDGE_TOKEN_FILE` to read a token from a mounted Docker/Kubernetes secret instead of placing it directly in the process environment. Direct and file-based values are mutually exclusive, unreadable or empty secret files fail startup, and all configured role and bridge tokens must be distinct so one leaked credential cannot silently cross a security boundary.
+
+### Mounted authentication secrets
+
+Append `_FILE` to any token variable and point it at a UTF-8 text file containing one token. A trailing newline is ignored:
+
+```yaml
+environment:
+  AXETOS_AUTH_ENABLED: "true"
+  AXETOS_ADMIN_TOKEN_FILE: /run/secrets/axetos_admin_token
+  AXETOS_BRIDGE_TOKEN_FILE: /run/secrets/axetos_bridge_token
+```
+
+Do not configure both the direct variable and its `_FILE` counterpart. Administrator, operator, viewer, and bridge token values must be different from one another.
+
 ## Version 0.36.0
 
 Version 0.36.0 prevents accidental unauthenticated network exposure. The server now refuses to bind to a non-loopback interface such as `0.0.0.0` or `::` while authentication is disabled. Local development on `127.0.0.1`, `::1`, or `localhost` remains unchanged. Operators behind an external trusted access-control boundary can explicitly acknowledge the risk with `--allow-insecure-public-bind`. Docker Compose now enables authentication by default and requires separate administrator and MT5 bridge tokens before startup.

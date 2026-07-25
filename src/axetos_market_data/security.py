@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import os
 import secrets
+from pathlib import Path
 from dataclasses import dataclass
 from enum import IntEnum
 
@@ -29,10 +30,10 @@ class SecuritySettings:
         enabled = os.getenv("AXETOS_AUTH_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
         return cls(
             enabled=enabled,
-            viewer_token=_clean(os.getenv("AXETOS_VIEWER_TOKEN")),
-            operator_token=_clean(os.getenv("AXETOS_OPERATOR_TOKEN")),
-            administrator_token=_clean(os.getenv("AXETOS_ADMIN_TOKEN")),
-            bridge_token=_clean(os.getenv("AXETOS_BRIDGE_TOKEN")),
+            viewer_token=_secret_from_environment("AXETOS_VIEWER_TOKEN"),
+            operator_token=_secret_from_environment("AXETOS_OPERATOR_TOKEN"),
+            administrator_token=_secret_from_environment("AXETOS_ADMIN_TOKEN"),
+            bridge_token=_secret_from_environment("AXETOS_BRIDGE_TOKEN"),
         )
 
     def validate(self) -> None:
@@ -42,6 +43,21 @@ class SecuritySettings:
             raise RuntimeError("AXETOS_ADMIN_TOKEN is required when authentication is enabled")
         if not self.bridge_token:
             raise RuntimeError("AXETOS_BRIDGE_TOKEN is required when authentication is enabled")
+
+        configured = {
+            "AXETOS_VIEWER_TOKEN": self.viewer_token,
+            "AXETOS_OPERATOR_TOKEN": self.operator_token,
+            "AXETOS_ADMIN_TOKEN": self.administrator_token,
+            "AXETOS_BRIDGE_TOKEN": self.bridge_token,
+        }
+        names_by_token: dict[str, list[str]] = {}
+        for name, token in configured.items():
+            if token:
+                names_by_token.setdefault(token, []).append(name)
+        duplicates = [names for names in names_by_token.values() if len(names) > 1]
+        if duplicates:
+            joined = "; ".join(", ".join(names) for names in duplicates)
+            raise RuntimeError(f"Authentication tokens must be distinct; reused by: {joined}")
 
     def role_for_token(self, token: str | None) -> Role | None:
         if not token:
@@ -63,6 +79,26 @@ class SecuritySettings:
 def _clean(value: str | None) -> str | None:
     value = (value or "").strip()
     return value or None
+
+
+def _secret_from_environment(name: str) -> str | None:
+    direct = _clean(os.getenv(name))
+    file_name = _clean(os.getenv(f"{name}_FILE"))
+    if direct and file_name:
+        raise RuntimeError(f"Configure only one of {name} or {name}_FILE")
+    if direct:
+        return direct
+    if not file_name:
+        return None
+
+    path = Path(file_name).expanduser()
+    try:
+        value = _clean(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise RuntimeError(f"Unable to read {name}_FILE at {path}: {exc}") from exc
+    if not value:
+        raise RuntimeError(f"{name}_FILE at {path} is empty")
+    return value
 
 
 def _credential_token(request: Request) -> str | None:

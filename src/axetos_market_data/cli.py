@@ -9,6 +9,7 @@ from .service import MarketDataService
 from .storage import MarketDataStore
 from .backups import BackupError, BackupService
 from .benchmarks import IngestionBenchmark, write_benchmark_result
+from .endurance import EnduranceRunner, write_endurance_result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,6 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--batch-size", type=int, default=1_000)
     benchmark.add_argument("--output")
     benchmark.add_argument("--keep-database", action="store_true")
+
+    endurance = subparsers.add_parser("endurance", help="Run repeated benchmark cycles for sustained-performance checks.")
+    endurance.add_argument("--duration-seconds", type=float, default=300.0)
+    endurance.add_argument("--ticks-per-cycle", type=int, default=100_000)
+    endurance.add_argument("--instruments", type=int, default=10)
+    endurance.add_argument("--batch-size", type=int, default=5_000)
+    endurance.add_argument("--regression-threshold-percent", type=float, default=20.0)
+    endurance.add_argument("--output")
     return parser
 
 
@@ -58,6 +67,19 @@ def main() -> None:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    if args.command == "endurance":
+        result = EnduranceRunner(
+            duration_seconds=args.duration_seconds,
+            ticks_per_cycle=args.ticks_per_cycle,
+            instruments=args.instruments,
+            batch_size=args.batch_size,
+            regression_threshold_percent=args.regression_threshold_percent,
+        ).run()
+        write_endurance_result(result, args.output)
+        if result.regression_detected:
+            raise SystemExit(2)
+        return
+
     if args.command == "benchmark":
         database = args.database if args.keep_database else None
         result = IngestionBenchmark(

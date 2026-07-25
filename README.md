@@ -4,9 +4,11 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.34.0
+## Version 0.34.1
 
-Version 0.34.0 adds continuous integration for both the default SQLite deployment and the optional PostgreSQL backend. GitHub Actions now runs the complete test suite across supported Python versions and starts an ephemeral PostgreSQL 16 service for a real schema, write, read, operational-event, and restart-initialization round trip. This closes the previous gap where PostgreSQL compatibility was validated only through SQL translation and portable-schema unit tests.
+Version 0.34.1 fixes the first GitHub Actions run by including NumPy in development dependencies and adding SQLite-compatible affected-row tracking to the PostgreSQL connection adapter. CI continues to validate SQLite across Python 3.11–3.13 and a real PostgreSQL 16 round trip.
+
+Version 0.34.0 added continuous integration for both the default SQLite deployment and the optional PostgreSQL backend. GitHub Actions now runs the complete test suite across supported Python versions and starts an ephemeral PostgreSQL 16 service for a real schema, write, read, operational-event, and restart-initialization round trip. This closes the previous gap where PostgreSQL compatibility was validated only through SQL translation and portable-schema unit tests.
 
 The PostgreSQL integration test remains skipped during ordinary local runs unless `AXETOS_TEST_POSTGRES_URL` is configured.
 
@@ -372,7 +374,7 @@ axetos-market-data benchmark --ticks 100000 --instruments 10 --batch-size 1000
 By default, the benchmark uses a temporary SQLite database and removes it afterward. Preserve the benchmark database by supplying the normal database path together with `--keep-database`:
 
 ```powershell
-axetos-market-data --database data/benchmark.sqlite benchmark --ticks 1000000 --instruments 25 --batch-size 5000 --keep-database --output benchmark-results/v0.34.0.json
+axetos-market-data --database data/benchmark.sqlite benchmark --ticks 1000000 --instruments 25 --batch-size 5000 --keep-database --output benchmark-results/v0.34.1.json
 ```
 
 The JSON result records requested and written ticks, elapsed time, sustained throughput, candle count, peak Python memory, backend name, and database size. Results are intended for comparing releases on the same machine; they are not presented as universal hardware-independent performance claims.
@@ -382,7 +384,7 @@ The JSON result records requested and written ticks, elapsed time, sustained thr
 Run repeated isolated ingestion cycles for a fixed duration:
 
 ```powershell
-axetos-market-data endurance --duration-seconds 300 --ticks-per-cycle 100000 --instruments 25 --batch-size 5000 --output benchmark-results/endurance-v0.34.0.json
+axetos-market-data endurance --duration-seconds 300 --ticks-per-cycle 100000 --instruments 25 --batch-size 5000 --output benchmark-results/endurance-v0.34.1.json
 ```
 
 The report includes average, median, minimum, and maximum throughput, total ticks, peak Python memory, and throughput drift from the first cycle to the last. The command exits with code `2` when negative drift exceeds `--regression-threshold-percent`, making it suitable for release checks and CI. Longer multi-hour runs should be performed on dedicated development or staging hosts.

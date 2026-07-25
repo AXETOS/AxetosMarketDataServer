@@ -16,6 +16,8 @@ class CursorLike(Protocol):
 
 
 class ConnectionLike(Protocol):
+    @property
+    def total_changes(self) -> int: ...
     def execute(self, query: str, params: Sequence[Any] = ()) -> CursorLike: ...
     def executemany(self, query: str, params: list[Sequence[Any]]) -> CursorLike: ...
     def executescript(self, script: str) -> None: ...
@@ -59,6 +61,11 @@ class PostgresCursorAdapter:
 class PostgresConnectionAdapter:
     def __init__(self, connection: Any) -> None:
         self._connection = connection
+        self._total_changes = 0
+
+    @property
+    def total_changes(self) -> int:
+        return self._total_changes
 
     @staticmethod
     def _translate(query: str) -> str:
@@ -69,10 +76,16 @@ class PostgresConnectionAdapter:
         return query.replace("?", "%s")
 
     def execute(self, query: str, params: Sequence[Any] = ()) -> PostgresCursorAdapter:
-        return PostgresCursorAdapter(self._connection.execute(self._translate(query), params))
+        cursor = PostgresCursorAdapter(self._connection.execute(self._translate(query), params))
+        if cursor.rowcount > 0:
+            self._total_changes += cursor.rowcount
+        return cursor
 
     def executemany(self, query: str, params: list[Sequence[Any]]) -> PostgresCursorAdapter:
-        return PostgresCursorAdapter(self._connection.executemany(self._translate(query), params))
+        cursor = PostgresCursorAdapter(self._connection.executemany(self._translate(query), params))
+        if cursor.rowcount > 0:
+            self._total_changes += cursor.rowcount
+        return cursor
 
     def executescript(self, script: str) -> None:
         for statement in script.split(";"):

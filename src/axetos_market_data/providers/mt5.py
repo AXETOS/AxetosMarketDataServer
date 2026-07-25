@@ -43,7 +43,8 @@ class MetaTrader5TickProvider:
             "terminal_running": False, "terminal_connected": False, "broker_connected": False,
             "account_logged_in": False, "account_login": None, "account_server": None,
             "account_company": None, "account_name": None, "login_attempted": False,
-            "login_required": bool(account_login), "error": None,
+            "login_required": bool(account_login), "reconnecting": False,
+            "reconnect_attempts": 0, "last_reconnect_utc": None, "error": None,
         }
         self.selection_status: dict[str, dict[str, object]] = {symbol: {"selected": False, "error": None} for symbol in symbols}
 
@@ -128,6 +129,50 @@ class MetaTrader5TickProvider:
         if self.account_login is not None and not self.session_status["account_logged_in"]:
             raise RuntimeError("MetaTrader5 account is not logged in")
 
+
+    def _select_symbols(self, mt5) -> bool:
+        selected_any = False
+        for symbol in self.symbols:
+            selected = bool(mt5.symbol_select(symbol, True))
+            error = None if selected else str(mt5.last_error())
+            self.selection_status[symbol] = {"selected": selected, "error": error}
+            selected_any = selected_any or selected
+        return selected_any
+
+    def _reconnect(self, mt5, attempts: int = 12) -> None:
+        """Reconnect the Python IPC session without terminating a healthy MT5 terminal.
+
+        MetaTrader5.shutdown() only releases this Python process's IPC connection.
+        A following initialize(path=...) reuses an existing terminal when available and
+        starts the configured executable only when the terminal has actually been closed.
+        """
+        self.session_status.update({"reconnecting": True, "error": str(mt5.last_error())})
+        try:
+            mt5.shutdown()
+        except Exception:
+            pass
+
+        last_error: object = None
+        for attempt in range(1, max(1, attempts) + 1):
+            self.session_status["reconnect_attempts"] = int(self.session_status.get("reconnect_attempts", 0) or 0) + 1
+            try:
+                self._initialize(mt5)
+                if self.symbols and not self._select_symbols(mt5):
+                    raise RuntimeError("Could not reselect any configured MT5 symbols")
+                self.session_status.update({
+                    "reconnecting": False,
+                    "last_reconnect_utc": datetime.now(UTC).isoformat(),
+                    "error": None,
+                })
+                return
+            except Exception as exc:
+                last_error = exc
+                self.session_status["error"] = str(exc)
+                if attempt < attempts:
+                    time.sleep(min(0.5 * (2 ** (attempt - 1)), 5.0))
+        self.session_status["reconnecting"] = False
+        raise RuntimeError(f"MetaTrader5 IPC reconnection failed after {attempts} attempts: {last_error}")
+
     def test_connection(self) -> dict[str, object]:
         mt5 = self._module()
         self._initialize(mt5)
@@ -204,13 +249,9 @@ class MetaTrader5TickProvider:
         self._active_mt5 = mt5
         cursors: dict[str, datetime] = {}
         try:
-            selected_any = False
+            selected_any = self._select_symbols(mt5)
             for symbol in self.symbols:
-                selected = bool(mt5.symbol_select(symbol, True))
-                error = None if selected else str(mt5.last_error())
-                self.selection_status[symbol] = {"selected": selected, "error": error}
-                if selected:
-                    selected_any = True
+                if self.selection_status.get(symbol, {}).get("selected"):
                     cursors[symbol] = datetime.now(UTC) - timedelta(seconds=self.batch_window_seconds)
             if self.symbols and not selected_any:
                 raise RuntimeError("Could not select any configured MT5 symbols")
@@ -224,7 +265,12 @@ class MetaTrader5TickProvider:
                     start = cursors[symbol] - timedelta(milliseconds=1)
                     rows = mt5.copy_ticks_range(symbol, start, now, mt5.COPY_TICKS_ALL)
                     if rows is None:
-                        raise RuntimeError(f"MT5 tick request failed for {symbol}: {mt5.last_error()}")
+                        # A closed or restarted terminal breaks MetaTrader5's IPC channel.
+                        # Reconnect the Python session, start the configured terminal only if
+                        # necessary, verify/login the account, and resume from the old cursor.
+                        self._reconnect(mt5)
+                        emitted = True  # avoid an unnecessary idle sleep after recovery
+                        break
                     if len(rows) > self.batch_limit:
                         rows = rows[-self.batch_limit :]
                     self.last_batch_sizes[symbol] = len(rows)

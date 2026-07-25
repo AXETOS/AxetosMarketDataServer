@@ -4,11 +4,11 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.33.3
+## Version 0.33.4
 
-Version 0.33.3 replaces the confusing password-environment-variable form field with a normal masked **MT5 password** field. On Windows, passwords entered through the management UI are protected with Windows DPAPI and stored in a machine-local runtime secret file, never in `providers.json` and never returned by the API. Reopening the provider shows only a mask; leaving the mask or field unchanged preserves the existing password, while entering a new value replaces it. Environment-variable credentials remain supported for headless and container deployments.
+Version 0.33.4 adds resilient MetaTrader 5 terminal lifecycle recovery. If the configured MT5 terminal is closed while the server is running, the provider detects the broken IPC channel, releases only the Python IPC session, reconnects to an already-running terminal or starts the configured executable when it is actually missing, verifies the broker connection and active account, logs in only when required, reselects configured symbols, and resumes from the previous tick cursor. A healthy running terminal is reused and is never terminated merely to reconnect.
 
-The release retains normalized midpoint feed activity so spread-only flicker does not create false market movement. It also keeps system health healthy while a connected market feed is inactive, clearly separates configured, MT5-selected, monitored, and stored instruments, and preserves conditional account authentication so login is attempted only when the configured account is not already active.
+This builds on the existing conditional account authentication, the normalized midpoint model that rejects spread-only flicker as market movement, the separation that keeps system health healthy while a connected market feed is inactive, and dashboard reporting for configured, MT5-selected, monitored, and stored instruments.
 
 ## MT5 terminal and account lifecycle
 
@@ -370,7 +370,7 @@ axetos-market-data benchmark --ticks 100000 --instruments 10 --batch-size 1000
 By default, the benchmark uses a temporary SQLite database and removes it afterward. Preserve the benchmark database by supplying the normal database path together with `--keep-database`:
 
 ```powershell
-axetos-market-data --database data/benchmark.sqlite benchmark --ticks 1000000 --instruments 25 --batch-size 5000 --keep-database --output benchmark-results/v0.33.3.json
+axetos-market-data --database data/benchmark.sqlite benchmark --ticks 1000000 --instruments 25 --batch-size 5000 --keep-database --output benchmark-results/v0.33.4.json
 ```
 
 The JSON result records requested and written ticks, elapsed time, sustained throughput, candle count, peak Python memory, backend name, and database size. Results are intended for comparing releases on the same machine; they are not presented as universal hardware-independent performance claims.
@@ -380,7 +380,7 @@ The JSON result records requested and written ticks, elapsed time, sustained thr
 Run repeated isolated ingestion cycles for a fixed duration:
 
 ```powershell
-axetos-market-data endurance --duration-seconds 300 --ticks-per-cycle 100000 --instruments 25 --batch-size 5000 --output benchmark-results/endurance-v0.33.3.json
+axetos-market-data endurance --duration-seconds 300 --ticks-per-cycle 100000 --instruments 25 --batch-size 5000 --output benchmark-results/endurance-v0.33.4.json
 ```
 
 The report includes average, median, minimum, and maximum throughput, total ticks, peak Python memory, and throughput drift from the first cycle to the last. The command exits with code `2` when negative drift exceeds `--regression-threshold-percent`, making it suitable for release checks and CI. Longer multi-hour runs should be performed on dedicated development or staging hosts.

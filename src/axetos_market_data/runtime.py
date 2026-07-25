@@ -45,6 +45,9 @@ class ProviderRuntime:
     account_company: str | None = None
     account_name: str | None = None
     login_attempted: bool = False
+    reconnecting: bool = False
+    reconnect_attempts: int = 0
+    last_reconnect_utc: str | None = None
 
 
 class ProviderWorker:
@@ -219,7 +222,8 @@ class ProviderWorker:
         symbols = self.symbol_statuses()
         session = getattr(self._provider_instance, "session_status", {}) if self._provider_instance is not None else {}
         for field in ("terminal_running", "terminal_connected", "broker_connected", "account_logged_in",
-                      "account_login", "account_server", "account_company", "account_name", "login_attempted"):
+                      "account_login", "account_server", "account_company", "account_name", "login_attempted",
+                      "reconnecting", "reconnect_attempts", "last_reconnect_utc"):
             if field in session:
                 setattr(self.runtime, field, session[field])
         configuration = asdict(self.config)

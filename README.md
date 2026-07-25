@@ -4,7 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.34.2
+## Version 0.35.0
+
+Version 0.35.0 hardens machine-local runtime state against interrupted writes. Provider configuration and encrypted MT5 secrets are now written to a temporary file, flushed to durable storage, and atomically replaced, so the active JSON file is never exposed in a partially written state. Failed replacements preserve the previous file and clean up temporary artifacts. Secret files retain owner-only permissions on supported platforms.
 
 Version 0.34.2 fixes the PostgreSQL CI batch-insert path by executing `executemany()` through a Psycopg cursor and retaining SQLite-compatible affected-row tracking. The real PostgreSQL 16 integration test now exercises the same batch tick insertion path used by the server.
 

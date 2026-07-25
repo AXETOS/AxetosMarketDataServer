@@ -6,9 +6,12 @@ import hashlib
 import hmac
 import json
 import os
+import threading
 import sys
 from ctypes import wintypes
 from pathlib import Path
+
+from .atomic_files import atomic_write_text
 
 
 class SecretStoreError(RuntimeError):
@@ -35,6 +38,7 @@ class SecretStore:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
 
     def _read(self) -> dict[str, dict[str, str]]:
         if not self.path.exists():
@@ -46,11 +50,8 @@ class SecretStore:
             raise SecretStoreError(f"Could not read secret store: {exc}") from exc
 
     def _write(self, values: dict[str, dict[str, str]]) -> None:
-        self.path.write_text(json.dumps({"version": 1, "secrets": values}, indent=2), encoding="utf-8")
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+        payload = json.dumps({"version": 1, "secrets": values}, indent=2) + "\n"
+        atomic_write_text(self.path, payload, mode=0o600)
 
     @staticmethod
     def _dpapi_encrypt(value: bytes) -> bytes:
@@ -131,20 +132,25 @@ class SecretStore:
     def set(self, provider_key: str, password: str) -> None:
         if not password:
             raise SecretStoreError("MT5 password cannot be empty")
-        values = self._read()
-        values[provider_key.casefold()] = self._encrypt(password)
-        self._write(values)
+        encrypted = self._encrypt(password)
+        with self._lock:
+            values = self._read()
+            values[provider_key.casefold()] = encrypted
+            self._write(values)
 
     def get(self, provider_key: str) -> str | None:
-        item = self._read().get(provider_key.casefold())
+        with self._lock:
+            item = self._read().get(provider_key.casefold())
         return self._decrypt(item) if item else None
 
     def configured(self, provider_key: str) -> bool:
-        return provider_key.casefold() in self._read()
+        with self._lock:
+            return provider_key.casefold() in self._read()
 
     def delete(self, provider_key: str) -> bool:
-        values = self._read()
-        removed = values.pop(provider_key.casefold(), None) is not None
-        if removed:
-            self._write(values)
-        return removed
+        with self._lock:
+            values = self._read()
+            removed = values.pop(provider_key.casefold(), None) is not None
+            if removed:
+                self._write(values)
+            return removed

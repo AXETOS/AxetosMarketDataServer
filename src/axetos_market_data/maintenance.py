@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from .history import HistoricalBackfillService
 from .providers.mt5 import MetaTrader5TickProvider
 from .storage import MarketDataStore
+from .secrets import SecretStore
 
 
 @dataclass(slots=True)
@@ -23,9 +24,10 @@ class MaintenanceRuntime:
 
 
 class ProviderMaintenanceWorker:
-    def __init__(self, config, store: MarketDataStore) -> None:
+    def __init__(self, config, store: MarketDataStore, secret_store: SecretStore | None = None) -> None:
         self.config = config
         self.store = store
+        self.secret_store = secret_store
         self.runtime = MaintenanceRuntime(config.provider_key)
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -76,6 +78,7 @@ class ProviderMaintenanceWorker:
                 account_login=self.config.account_login,
                 account_server=self.config.account_server,
                 password_env=self.config.password_env,
+                password=self.secret_store.get(self.config.provider_key) if self.secret_store else None,
             )
             history = HistoricalBackfillService(self.store)
             end = datetime.now(UTC)

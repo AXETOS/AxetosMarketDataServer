@@ -4,14 +4,11 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.33.2
+## Version 0.33.3
 
-Version 0.33.2 fixes provider-form validation error rendering. Structured FastAPI validation responses are now converted into readable messages instead of appearing as `[object Object]`. It retains the MT5 terminal lifecycle, conditional account authentication, and secure credential-reference handling from v0.33.1: saved references are masked, masked values are preserved safely during edits, actual passwords are never stored in providers.json, and only valid uppercase environment-variable names are accepted.
-The v0.32.0 management model still distinguishes configured, MT5-selected, monitored, and stored instruments.
+Version 0.33.3 replaces the confusing password-environment-variable form field with a normal masked **MT5 password** field. On Windows, passwords entered through the management UI are protected with Windows DPAPI and stored in a machine-local runtime secret file, never in `providers.json` and never returned by the API. Reopening the provider shows only a mask; leaving the mask or field unchanged preserves the existing password, while entering a new value replaces it. Environment-variable credentials remain supported for headless and container deployments.
 
-Version 0.28.0 separates infrastructure health, provider connectivity, and market-feed activity. Connected providers now keep system health healthy during closed or inactive markets, configured feed state restores as INACTIVE after restart, and the management UI labels an operational MT5 worker as Connected rather than Live.
-
-Version 0.28.0 makes feed activity and live candle construction use one normalized reference market price. For spot FX and CFDs without a reliable last-trade price, the server uses the bid/ask midpoint normalized to the broker quote precision. Bid and ask remain available for spread and execution display, but spread-only flicker no longer keeps a feed falsely LIVE or creates artificial candle movement.
+The release retains normalized midpoint feed activity so spread-only flicker does not create false market movement. It also keeps system health healthy while a connected market feed is inactive, clearly separates configured, MT5-selected, monitored, and stored instruments, and preserves conditional account authentication so login is attempted only when the configured account is not already active.
 
 ## MT5 terminal and account lifecycle
 
@@ -23,7 +20,7 @@ For an MT5 provider, startup follows this sequence:
 4. If the configured login and server already match, continue without sending a login request.
 5. If they do not match, read the password from the configured environment variable, call `mt5.login()`, and verify the resulting account before selecting symbols.
 
-The provider editor stores only the account number, broker server, and the name of the password environment variable. The password itself is never written to `providers.json`. Example:
+The provider editor accepts the MT5 password through a masked field. On Windows it is protected with DPAPI in a machine-local runtime secret store and is never written to `providers.json` or returned by the API. For headless deployments, an environment-variable reference remains supported. Example:
 
 ```powershell
 $env:AXETOS_MT5_OANDA_PASSWORD="replace-with-the-account-password"
@@ -373,7 +370,7 @@ axetos-market-data benchmark --ticks 100000 --instruments 10 --batch-size 1000
 By default, the benchmark uses a temporary SQLite database and removes it afterward. Preserve the benchmark database by supplying the normal database path together with `--keep-database`:
 
 ```powershell
-axetos-market-data --database data/benchmark.sqlite benchmark --ticks 1000000 --instruments 25 --batch-size 5000 --keep-database --output benchmark-results/v0.33.2.json
+axetos-market-data --database data/benchmark.sqlite benchmark --ticks 1000000 --instruments 25 --batch-size 5000 --keep-database --output benchmark-results/v0.33.3.json
 ```
 
 The JSON result records requested and written ticks, elapsed time, sustained throughput, candle count, peak Python memory, backend name, and database size. Results are intended for comparing releases on the same machine; they are not presented as universal hardware-independent performance claims.
@@ -383,7 +380,7 @@ The JSON result records requested and written ticks, elapsed time, sustained thr
 Run repeated isolated ingestion cycles for a fixed duration:
 
 ```powershell
-axetos-market-data endurance --duration-seconds 300 --ticks-per-cycle 100000 --instruments 25 --batch-size 5000 --output benchmark-results/endurance-v0.33.2.json
+axetos-market-data endurance --duration-seconds 300 --ticks-per-cycle 100000 --instruments 25 --batch-size 5000 --output benchmark-results/endurance-v0.33.3.json
 ```
 
 The report includes average, median, minimum, and maximum throughput, total ticks, peak Python memory, and throughput drift from the first cycle to the last. The command exits with code `2` when negative drift exceeds `--regression-threshold-percent`, making it suitable for release checks and CI. Longer multi-hour runs should be performed on dedicated development or staging hosts.

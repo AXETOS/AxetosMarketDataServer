@@ -14,3 +14,6 @@ build/
 dist/
 
 data/
+
+# Machine-local protected secrets
+mt5_secrets.json

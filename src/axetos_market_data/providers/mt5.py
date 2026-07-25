@@ -25,6 +25,7 @@ class MetaTrader5TickProvider:
         account_login: int | None = None,
         account_server: str | None = None,
         password_env: str | None = None,
+        password: str | None = None,
     ) -> None:
         self.symbols = symbols
         self.terminal_path = terminal_path
@@ -37,6 +38,7 @@ class MetaTrader5TickProvider:
         self.account_login = account_login
         self.account_server = account_server
         self.password_env = password_env
+        self.password = password
         self.session_status: dict[str, object] = {
             "terminal_running": False, "terminal_connected": False, "broker_connected": False,
             "account_logged_in": False, "account_login": None, "account_server": None,
@@ -94,11 +96,10 @@ class MetaTrader5TickProvider:
 
         # Do not send a login request when the desired account is already active.
         if self.account_login is not None and not (login_matches and server_matches):
-            password = os.getenv(self.password_env or "") if self.password_env else None
+            password = self.password or (os.getenv(self.password_env or "") if self.password_env else None)
             if not password:
                 raise RuntimeError(
-                    f"MT5 account {self.account_login} is not active and password environment variable "
-                    f"{self.password_env or '<not configured>'} is unavailable"
+                    f"MT5 account {self.account_login} is not active and no MT5 password is available"
                 )
             self.session_status["login_attempted"] = True
             kwargs = {"login": int(self.account_login), "password": password}

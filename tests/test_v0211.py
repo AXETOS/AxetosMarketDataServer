@@ -3,7 +3,7 @@ from axetos_market_data.web import CONTROL_CENTER_HTML
 
 
 def test_v0211_symbol_dialog_layout():
-    assert __version__ == "0.33.2"
+    assert __version__ == "0.33.3"
     assert "grid-template-columns:minmax(190px,1.25fr)" in CONTROL_CENTER_HTML
     assert "Canonical instrument" in CONTROL_CENTER_HTML
     assert "Mapping state" in CONTROL_CENTER_HTML

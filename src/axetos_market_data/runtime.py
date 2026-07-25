@@ -18,6 +18,7 @@ from .storage import MarketDataStore
 from .operational import OperationalEventService
 from .symbols import SymbolResolver
 from .timeframes import bucket_start
+from .secrets import SecretStore
 
 
 @dataclass(slots=True)
@@ -47,10 +48,11 @@ class ProviderRuntime:
 
 
 class ProviderWorker:
-    def __init__(self, config: ProviderConfig, store: MarketDataStore, authority: ProviderAuthorityRegistry) -> None:
+    def __init__(self, config: ProviderConfig, store: MarketDataStore, authority: ProviderAuthorityRegistry, secret_store: SecretStore | None = None) -> None:
         self.config = config
         self.store = store
         self.authority = authority
+        self.secret_store = secret_store
         self.runtime = ProviderRuntime(provider_key=config.provider_key)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -101,6 +103,7 @@ class ProviderWorker:
                 symbols, self.config.terminal_path, self.config.provider_key,
                 self.config.batch_window_seconds, self.config.batch_limit, self.config.symbol_aliases, self.store,
                 self.config.account_login, self.config.account_server, self.config.password_env,
+                self.secret_store.get(self.config.provider_key) if self.secret_store else None,
             )
         return MockTickProvider(symbols[0], self.config.poll_interval_seconds, provider=self.config.provider_key)
 
@@ -220,6 +223,8 @@ class ProviderWorker:
             if field in session:
                 setattr(self.runtime, field, session[field])
         configuration = asdict(self.config)
+        secret_configured = bool(self.secret_store and self.secret_store.configured(self.config.provider_key))
+        configuration["password_configured"] = secret_configured or bool(self.config.password_env)
         configuration["password_env_configured"] = bool(self.config.password_env)
         configuration["password_env"] = "********" if self.config.password_env else None
         return {
@@ -234,9 +239,10 @@ class ProviderWorker:
 
 
 class ProviderSupervisor:
-    def __init__(self, config_store: ConfigurationStore, data_store: MarketDataStore) -> None:
+    def __init__(self, config_store: ConfigurationStore, data_store: MarketDataStore, secret_store: SecretStore | None = None) -> None:
         self.config_store = config_store
         self.data_store = data_store
+        self.secret_store = secret_store
         self._workers: dict[str, ProviderWorker] = {}
         self._maintenance: dict[str, ProviderMaintenanceWorker] = {}
         self.authority = ProviderAuthorityRegistry()
@@ -251,9 +257,9 @@ class ProviderSupervisor:
             configs = self.config_store.read_all()
             self.authority.replace_configs(self._routing_configs(configs))
             for config in configs:
-                self._workers[config.provider_key] = ProviderWorker(config, self.data_store, self.authority)
+                self._workers[config.provider_key] = ProviderWorker(config, self.data_store, self.authority, self.secret_store)
                 if config.kind.lower() == "mt5" and config.maintenance_enabled:
-                    maintenance = ProviderMaintenanceWorker(config, self.data_store)
+                    maintenance = ProviderMaintenanceWorker(config, self.data_store, self.secret_store)
                     self._maintenance[config.provider_key] = maintenance
                     maintenance.start()
                 if config.enabled and config.auto_start:
@@ -288,10 +294,10 @@ class ProviderSupervisor:
             if old_maintenance: old_maintenance.stop()
             self.config_store.upsert(config)
             self.authority.replace_configs(self._routing_configs(self.config_store.read_all()))
-            worker = ProviderWorker(config, self.data_store, self.authority)
+            worker = ProviderWorker(config, self.data_store, self.authority, self.secret_store)
             self._workers[config.provider_key] = worker
             if config.kind.lower() == "mt5" and config.maintenance_enabled:
-                maintenance = ProviderMaintenanceWorker(config, self.data_store)
+                maintenance = ProviderMaintenanceWorker(config, self.data_store, self.secret_store)
                 self._maintenance[config.provider_key] = maintenance
                 maintenance.start()
             if config.enabled and config.auto_start: worker.start()
@@ -324,5 +330,7 @@ class ProviderSupervisor:
             maintenance = self._maintenance.pop(provider_key, None)
             if maintenance: maintenance.stop()
             removed = self.config_store.delete(provider_key)
+            if self.secret_store:
+                self.secret_store.delete(provider_key)
             self.authority.replace_configs(self._routing_configs(self.config_store.read_all()))
             return removed

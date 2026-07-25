@@ -148,7 +148,13 @@ def install_security_middleware(app, settings: SecuritySettings) -> None:
             return await call_next(request)
 
         token = _credential_token(request)
-        if path.startswith("/api/market-data/ingest/mt5/"):
+        bridge_paths = (
+            "/api/market-data/ingest/mt5/",
+            "/api/market-data/mt5/enabled-symbols.txt",
+            "/api/market-data/mt5/repair-request.txt",
+            "/api/market-data/mt5/repair-result",
+        )
+        if path.startswith(bridge_paths):
             if settings.bridge_token_is_valid(token):
                 return await call_next(request)
             return JSONResponse(

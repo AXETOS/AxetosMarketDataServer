@@ -385,6 +385,48 @@ def create_app(
         items=store.list_bridge_instruments(provider_key, terminal_instance_id)
         return {"count":len(items), "instruments":items}
 
+    @app.get("/api/market-data/mt5/enabled-symbols.txt", response_class=PlainTextResponse)
+    def enabled_bridge_symbols(
+        provider_key: str = Query(alias="providerKey"),
+        terminal_instance_id: str = Query(alias="terminalInstanceId"),
+    ) -> str:
+        items = store.list_bridge_instruments(provider_key, terminal_instance_id)
+        return ",".join(
+            str(item["provider_symbol"])
+            for item in items
+            if bool(item.get("is_selected"))
+        )
+
+    @app.get("/api/market-data/mt5/repair-request.txt", response_class=PlainTextResponse)
+    def bridge_repair_request(
+        provider_key: str = Query(alias="providerKey"),
+        terminal_instance_id: str = Query(alias="terminalInstanceId"),
+    ) -> str:
+        # No bounded repair is pending. Keeping this compatibility endpoint available
+        # prevents older/current EAs from treating an optional control-plane poll as
+        # a transport outage. A persistent repair queue can populate this contract later.
+        _ = (provider_key, terminal_instance_id)
+        return ""
+
+    @app.post("/api/market-data/mt5/repair-result")
+    def bridge_repair_result(
+        provider_key: str = Query(alias="providerKey"),
+        terminal_instance_id: str = Query(alias="terminalInstanceId"),
+        provider_symbol: str = Query(alias="providerSymbol"),
+        interval: str = Query(),
+        completed: bool = Query(),
+        request_id: str = Query(alias="requestId"),
+    ) -> dict[str, object]:
+        return {
+            "accepted": True,
+            "providerKey": provider_key,
+            "terminalInstanceId": terminal_instance_id,
+            "providerSymbol": provider_symbol,
+            "interval": interval,
+            "completed": completed,
+            "requestId": request_id,
+        }
+
     @app.post("/api/market-data/mt5/instrument-selection")
     def instrument_selection(request: InstrumentSelectionRequest) -> dict[str, object]:
         changed=store.set_bridge_instrument_selection(request.provider_key,request.terminal_instance_id,request.provider_symbol,request.enabled)

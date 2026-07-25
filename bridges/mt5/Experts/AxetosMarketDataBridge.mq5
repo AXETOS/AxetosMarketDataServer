@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.11"
+#property version   "1.12"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -89,7 +89,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.11: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.12: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -884,6 +884,15 @@ void RecordHttpSuccess()
    g_http_suppressed_requests = 0;
 }
 
+void RecordHttpApplicationFailure(string method, string path, int status, int error_code, string response)
+{
+   // Any HTTP response proves that the server is reachable. Client/configuration
+   // errors must not suppress heartbeat, tick, candle, or other endpoint calls.
+   RecordHttpSuccess();
+   PrintFormat("Axetos MT5 Bridge: %s %s rejected. HTTP=%d error=%d response=%s; continuing other requests.",
+               method, path, status, error_code, response);
+}
+
 void RecordHttpFailure(string method, string path, int status, int error_code, string response)
 {
    g_http_consecutive_failures++;
@@ -933,7 +942,10 @@ bool GetText(string path, string &response)
       return true;
    }
 
-   RecordHttpFailure("GET", path, status, request_error, response);
+   if(status < 0 || status >= 500)
+      RecordHttpFailure("GET", path, status, request_error, response);
+   else
+      RecordHttpApplicationFailure("GET", path, status, request_error, response);
    return false;
 }
 
@@ -969,7 +981,10 @@ bool PostJson(string path, string payload)
       return true;
    }
 
-   RecordHttpFailure("POST", path, status, request_error, response);
+   if(status < 0 || status >= 500)
+      RecordHttpFailure("POST", path, status, request_error, response);
+   else
+      RecordHttpApplicationFailure("POST", path, status, request_error, response);
    return false;
 }
 

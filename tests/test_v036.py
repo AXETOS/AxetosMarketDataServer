@@ -60,6 +60,6 @@ def test_authentication_configuration_is_validated_before_binding() -> None:
 
 def test_v036_release_metadata() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert __version__ == "0.37.0"
-    assert 'version = "0.37.0"' in (root / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.37.0" in (root / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.38.0"
+    assert 'version = "0.38.0"' in (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.38.0" in (root / "README.md").read_text(encoding="utf-8")

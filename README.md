@@ -4,6 +4,10 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.38.0
+
+Version 0.38.0 fixes the dashboard aggregate market-feed status. A single inactive instrument no longer forces the entire market feed to display `INACTIVE` while other selected instruments are still receiving live observations. Mixed operational and degraded feeds now report `PARTIAL`; all-live or live-and-quiet combinations report `LIVE`; and the feed-status API includes per-state counts for diagnostics.
+
 ## Version 0.37.0
 
 Version 0.37.0 adds production-friendly secret-file loading for every API authentication credential. Operators can set `AXETOS_VIEWER_TOKEN_FILE`, `AXETOS_OPERATOR_TOKEN_FILE`, `AXETOS_ADMIN_TOKEN_FILE`, or `AXETOS_BRIDGE_TOKEN_FILE` to read a token from a mounted Docker/Kubernetes secret instead of placing it directly in the process environment. Direct and file-based values are mutually exclusive, unreadable or empty secret files fail startup, and all configured role and bridge tokens must be distinct so one leaked credential cannot silently cross a security boundary.

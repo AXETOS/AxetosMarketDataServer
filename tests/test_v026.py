@@ -19,9 +19,9 @@ def tick(at: datetime, bid: str, ask: str, provider: str = "Oanda.MT5") -> Tick:
 
 
 def test_release_readme_and_runtime_data_policy() -> None:
-    assert __version__ == "0.37.0"
+    assert __version__ == "0.38.0"
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "## Version 0.37.0" in readme
+    assert "## Version 0.38.0" in readme
     assert "GET /api/feed-status" in readme
     assert "flat candles" in readme
     assert "data/" in (ROOT / ".gitignore").read_text(encoding="utf-8")
@@ -72,4 +72,4 @@ def test_feed_status_endpoint(tmp_path: Path) -> None:
     with TestClient(app) as client:
         response = client.get("/api/feed-status")
         assert response.status_code == 200
-        assert response.json() == {"overall_state": "INITIALIZING", "count": 0, "items": []}
+        assert response.json() == {"overall_state": "INITIALIZING", "count": 0, "state_counts": {}, "items": []}

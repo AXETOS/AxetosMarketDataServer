@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.10"
+#property version   "1.11"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -21,6 +21,7 @@ input int    InpHeartbeatSeconds   = 1;
 input int    InpSelectionRefreshSeconds = 15;
 input bool   InpUseServerSelection = true;
 input bool   InpSendHistoricalBars = true;
+input int    InpHttpMaxBackoffSeconds = 30;
 
 string g_symbols[];
 datetime g_last_m1_bar[];
@@ -35,6 +36,9 @@ int g_backfill_stable_count = 0;
 int g_backfill_last_count = -1;
 datetime g_backfill_last_oldest = 0;
 datetime g_backfill_next_attempt = 0;
+int g_http_consecutive_failures = 0;
+datetime g_http_retry_after = 0;
+int g_http_suppressed_requests = 0;
 
 // Provider-native week/month history is never requested. The server builds
 // Monday-Sunday weeks and true calendar months exclusively from canonical daily data.
@@ -83,6 +87,9 @@ int OnInit()
 
    g_terminal_id = BuildTerminalId();
    EventSetTimer(1);
+   string transport_response = "";
+   if(GetText("/api/live", transport_response))
+      PrintFormat("Axetos MT5 Bridge v1.11: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -857,8 +864,47 @@ string JoinedSymbols(string &symbols[])
    return value;
 }
 
+bool HttpAttemptAllowed()
+{
+   if(g_http_retry_after > 0 && TimeLocal() < g_http_retry_after)
+   {
+      g_http_suppressed_requests++;
+      return false;
+   }
+   return true;
+}
+
+void RecordHttpSuccess()
+{
+   if(g_http_consecutive_failures > 0)
+      PrintFormat("Axetos MT5 Bridge: server communication restored after %d failed attempt(s); %d request(s) suppressed.",
+                  g_http_consecutive_failures, g_http_suppressed_requests);
+   g_http_consecutive_failures = 0;
+   g_http_retry_after = 0;
+   g_http_suppressed_requests = 0;
+}
+
+void RecordHttpFailure(string method, string path, int status, int error_code, string response)
+{
+   g_http_consecutive_failures++;
+   int exponent = MathMin(g_http_consecutive_failures - 1, 5);
+   int delay_seconds = 1;
+   for(int i = 0; i < exponent; i++)
+      delay_seconds *= 2;
+   delay_seconds = MathMin(delay_seconds, MathMax(1, InpHttpMaxBackoffSeconds));
+   g_http_retry_after = TimeLocal() + delay_seconds;
+
+   PrintFormat("Axetos MT5 Bridge: %s %s failed. HTTP=%d error=%d response=%s; retry in %ds (%d request(s) suppressed).",
+               method, path, status, error_code, response, delay_seconds, g_http_suppressed_requests);
+   g_http_suppressed_requests = 0;
+}
+
 bool GetText(string path, string &response)
 {
+   response = "";
+   if(!HttpAttemptAllowed())
+      return false;
+
    string url = InpServerUrl + path;
    string headers = "Accept: text/plain\r\n";
    if(InpBridgeToken != "")
@@ -868,21 +914,36 @@ bool GetText(string path, string &response)
    char result[];
    string result_headers;
    ArrayResize(data, 0);
+   ArrayResize(result, 0);
    ResetLastError();
-   int status = WebRequest("GET", url, headers, InpRequestTimeoutMs, data, result, result_headers);
-   response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
-   if(status >= 200 && status < 300)
-      return true;
 
-   PrintFormat("Axetos MT5 Bridge: GET %s failed. HTTP=%d error=%d response=%s",
-               path, status, GetLastError(), response);
+   int status;
+   if(InpBridgeToken == "")
+      status = WebRequest("GET", url, NULL, NULL, InpRequestTimeoutMs, data, 0, result, result_headers);
+   else
+      status = WebRequest("GET", url, headers, InpRequestTimeoutMs, data, result, result_headers);
+
+   int request_error = GetLastError();
+   if(ArraySize(result) > 0)
+      response = CharArrayToString(result, 0, ArraySize(result), CP_UTF8);
+
+   if(status >= 200 && status < 300)
+   {
+      RecordHttpSuccess();
+      return true;
+   }
+
+   RecordHttpFailure("GET", path, status, request_error, response);
    return false;
 }
 
 bool PostJson(string path, string payload)
 {
+   if(!HttpAttemptAllowed())
+      return false;
+
    string url = InpServerUrl + path;
-   string headers = "Content-Type: application/json\r\n";
+   string headers = "Content-Type: application/json\r\nAccept: application/json\r\n";
    if(InpBridgeToken != "")
       headers += "Authorization: Bearer " + InpBridgeToken + "\r\n";
 
@@ -892,15 +953,23 @@ bool PostJson(string path, string payload)
    int length = StringToCharArray(payload, data, 0, WHOLE_ARRAY, CP_UTF8);
    if(length > 0)
       ArrayResize(data, length - 1);
+   ArrayResize(result, 0);
 
    ResetLastError();
    int status = WebRequest("POST", url, headers, InpRequestTimeoutMs, data, result, result_headers);
-   if(status >= 200 && status < 300)
-      return true;
+   int request_error = GetLastError();
 
-   string response = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
-   PrintFormat("Axetos MT5 Bridge: POST %s failed. HTTP=%d error=%d response=%s",
-               path, status, GetLastError(), response);
+   string response = "";
+   if(ArraySize(result) > 0)
+      response = CharArrayToString(result, 0, ArraySize(result), CP_UTF8);
+
+   if(status >= 200 && status < 300)
+   {
+      RecordHttpSuccess();
+      return true;
+   }
+
+   RecordHttpFailure("POST", path, status, request_error, response);
    return false;
 }
 

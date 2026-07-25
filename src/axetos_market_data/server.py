@@ -5,6 +5,13 @@ import ipaddress
 import logging
 import os
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
 import uvicorn
 
 from .security import SecuritySettings
@@ -45,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--log-level", default="info")
+    parser.add_argument(
+        "--access-log",
+        action="store_true",
+        default=_env_flag("AXETOS_ACCESS_LOG", False),
+        help="Log every HTTP request. Disabled by default to avoid dashboard-polling noise.",
+    )
     parser.add_argument("--database-url", default=os.getenv("AXETOS_DATABASE_URL", "data/market_data.sqlite"))
     parser.add_argument(
         "--allow-insecure-public-bind",
@@ -67,7 +80,13 @@ def main() -> None:
         allow_insecure_public_bind=args.allow_insecure_public_bind,
     )
     os.environ["AXETOS_DATABASE_URL"] = args.database_url
-    uvicorn.run("axetos_market_data.web:app", host=args.host, port=args.port, log_level=args.log_level)
+    uvicorn.run(
+        "axetos_market_data.web:app",
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level,
+        access_log=args.access_log,
+    )
 
 
 if __name__ == "__main__":

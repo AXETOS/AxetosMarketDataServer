@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+
+_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def valid_password_env_name(value: str | None) -> bool:
+    return bool(value and _ENV_NAME_RE.fullmatch(value))
 
 
 @dataclass(slots=True)
@@ -47,7 +55,19 @@ class ConfigurationStore:
         if not self.path.exists():
             return []
         data = json.loads(self.path.read_text(encoding="utf-8"))
-        return [ProviderConfig(**item) for item in data.get("providers", [])]
+        changed = False
+        providers: list[ProviderConfig] = []
+        for item in data.get("providers", []):
+            item = dict(item)
+            password_env = item.get("password_env")
+            if password_env and not valid_password_env_name(str(password_env)):
+                # Never retain a value that looks like an actual password in providers.json.
+                item["password_env"] = None
+                changed = True
+            providers.append(ProviderConfig(**item))
+        if changed:
+            self.write_all(providers)
+        return providers
 
     def write_all(self, providers: list[ProviderConfig]) -> None:
         payload = {"providers": [asdict(provider) for provider in providers]}

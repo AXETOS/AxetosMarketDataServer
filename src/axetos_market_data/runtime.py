@@ -219,8 +219,11 @@ class ProviderWorker:
                       "account_login", "account_server", "account_company", "account_name", "login_attempted"):
             if field in session:
                 setattr(self.runtime, field, session[field])
+        configuration = asdict(self.config)
+        configuration["password_env_configured"] = bool(self.config.password_env)
+        configuration["password_env"] = "********" if self.config.password_env else None
         return {
-            "configuration": asdict(self.config),
+            "configuration": configuration,
             "runtime": asdict(self.runtime),
             "feeds": self.feed.reports(),
             "symbols": symbols,

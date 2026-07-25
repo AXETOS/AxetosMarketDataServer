@@ -82,7 +82,9 @@ class PostgresConnectionAdapter:
         return cursor
 
     def executemany(self, query: str, params: list[Sequence[Any]]) -> PostgresCursorAdapter:
-        cursor = PostgresCursorAdapter(self._connection.executemany(self._translate(query), params))
+        native_cursor = self._connection.cursor()
+        native_cursor.executemany(self._translate(query), params)
+        cursor = PostgresCursorAdapter(native_cursor)
         if cursor.rowcount > 0:
             self._total_changes += cursor.rowcount
         return cursor

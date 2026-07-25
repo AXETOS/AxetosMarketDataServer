@@ -15,12 +15,20 @@ class FakeCursor:
         return []
 
 
+class FakeNativeCursor(FakeCursor):
+    def __init__(self):
+        super().__init__(0)
+
+    def executemany(self, query, params):
+        self.rowcount = len(params)
+
+
 class FakeConnection:
     def execute(self, query, params=()):
         return FakeCursor(1)
 
-    def executemany(self, query, params):
-        return FakeCursor(len(params))
+    def cursor(self):
+        return FakeNativeCursor()
 
 
 def test_postgres_adapter_tracks_total_changes():
@@ -36,7 +44,7 @@ def test_v0341_release_metadata_and_numpy_dev_dependency():
     root = Path(__file__).resolve().parents[1]
     pyproject = (root / "pyproject.toml").read_text()
     readme = (root / "README.md").read_text()
-    assert __version__ == "0.34.1"
-    assert 'version = "0.34.1"' in pyproject
+    assert __version__ == "0.34.2"
+    assert 'version = "0.34.2"' in pyproject
     assert '"numpy>=1.26"' in pyproject
-    assert "## Version 0.34.1" in readme
+    assert "## Version 0.34.2" in readme

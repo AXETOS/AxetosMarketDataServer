@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.31.0
+## Version 0.32.0
 
-Version 0.31.0 adds a sustained-performance endurance runner and reorganizes the provider-control toolbar into two responsive action rows. The endurance command repeats deterministic isolated ingestion cycles for a requested duration, reports throughput range, memory peak, and performance drift, and can fail automation when degradation exceeds a configured threshold.
+Version 0.32.0 separates configured, MT5-selected, monitored, and stored instruments in the management UI. Every configured canonical instrument is registered with feed-state monitoring at provider startup, while per-symbol MT5 selection results expose selected and failed broker symbols without conflating configuration with stored market data.
 
 Version 0.28.0 separates infrastructure health, provider connectivity, and market-feed activity. Connected providers now keep system health healthy during closed or inactive markets, configured feed state restores as INACTIVE after restart, and the management UI labels an operational MT5 worker as Connected rather than Live.
 
@@ -354,7 +354,7 @@ axetos-market-data benchmark --ticks 100000 --instruments 10 --batch-size 1000
 By default, the benchmark uses a temporary SQLite database and removes it afterward. Preserve the benchmark database by supplying the normal database path together with `--keep-database`:
 
 ```powershell
-axetos-market-data --database data/benchmark.sqlite benchmark --ticks 1000000 --instruments 25 --batch-size 5000 --keep-database --output benchmark-results/v0.31.0.json
+axetos-market-data --database data/benchmark.sqlite benchmark --ticks 1000000 --instruments 25 --batch-size 5000 --keep-database --output benchmark-results/v0.32.0.json
 ```
 
 The JSON result records requested and written ticks, elapsed time, sustained throughput, candle count, peak Python memory, backend name, and database size. Results are intended for comparing releases on the same machine; they are not presented as universal hardware-independent performance claims.
@@ -364,7 +364,7 @@ The JSON result records requested and written ticks, elapsed time, sustained thr
 Run repeated isolated ingestion cycles for a fixed duration:
 
 ```powershell
-axetos-market-data endurance --duration-seconds 300 --ticks-per-cycle 100000 --instruments 25 --batch-size 5000 --output benchmark-results/endurance-v0.31.0.json
+axetos-market-data endurance --duration-seconds 300 --ticks-per-cycle 100000 --instruments 25 --batch-size 5000 --output benchmark-results/endurance-v0.32.0.json
 ```
 
 The report includes average, median, minimum, and maximum throughput, total ticks, peak Python memory, and throughput drift from the first cycle to the last. The command exits with code `2` when negative drift exceeds `--regression-threshold-percent`, making it suitable for release checks and CI. Longer multi-hour runs should be performed on dedicated development or staging hosts.

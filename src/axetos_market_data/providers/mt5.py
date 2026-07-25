@@ -30,6 +30,7 @@ class MetaTrader5TickProvider:
         self.last_batch_sizes: dict[str, int] = {}
         self.symbol_resolver = SymbolResolver(store=store, aliases=symbol_aliases)
         self._active_mt5 = None
+        self.selection_status: dict[str, dict[str, object]] = {symbol: {"selected": False, "error": None} for symbol in symbols}
 
     @staticmethod
     def _canonical_symbol(symbol: str) -> str:
@@ -122,15 +123,23 @@ class MetaTrader5TickProvider:
         self._active_mt5 = mt5
         cursors: dict[str, datetime] = {}
         try:
+            selected_any = False
             for symbol in self.symbols:
-                if not mt5.symbol_select(symbol, True):
-                    raise RuntimeError(f"Could not select MT5 symbol {symbol}: {mt5.last_error()}")
-                cursors[symbol] = datetime.now(UTC) - timedelta(seconds=self.batch_window_seconds)
+                selected = bool(mt5.symbol_select(symbol, True))
+                error = None if selected else str(mt5.last_error())
+                self.selection_status[symbol] = {"selected": selected, "error": error}
+                if selected:
+                    selected_any = True
+                    cursors[symbol] = datetime.now(UTC) - timedelta(seconds=self.batch_window_seconds)
+            if self.symbols and not selected_any:
+                raise RuntimeError("Could not select any configured MT5 symbols")
 
             while True:
                 emitted = False
                 now = datetime.now(UTC)
                 for symbol in self.symbols:
+                    if not self.selection_status.get(symbol, {}).get("selected"):
+                        continue
                     start = cursors[symbol] - timedelta(milliseconds=1)
                     rows = mt5.copy_ticks_range(symbol, start, now, mt5.COPY_TICKS_ALL)
                     if rows is None:

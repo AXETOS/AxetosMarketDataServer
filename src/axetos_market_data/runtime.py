@@ -51,8 +51,11 @@ class ProviderWorker:
             config.feed_quiet_seconds, config.feed_stalled_seconds, config.feed_inactive_seconds,
         ))
         resolver = SymbolResolver(store)
+        self._symbol_entries: list[dict[str, object]] = []
+        self._provider_instance = None
         for provider_symbol in config.normalized_symbols():
             instrument = resolver.resolve(config.provider_key, provider_symbol).canonical_instrument
+            self._symbol_entries.append({"provider_symbol": provider_symbol, "canonical_instrument": instrument, "selection_state": "configured", "selected": False, "error": None})
             latest = store.latest_tick_for(config.provider_key, instrument)
             timestamp = None
             bid = ask = market_price = None
@@ -144,6 +147,7 @@ class ProviderWorker:
         previous_states: dict[str, str] = {}
         try:
             provider = self._provider()
+            self._provider_instance = provider
             self.runtime.status = "Live"
             self.events.record("info", "provider.recovery", "Provider is live", provider=self.config.provider_key, details={"kind": self.config.kind})
             for tick in provider.stream():
@@ -187,8 +191,27 @@ class ProviderWorker:
             if self.runtime.status != "Failed":
                 self.runtime.status = "Stopped"
 
+    def symbol_statuses(self) -> list[dict[str, object]]:
+        statuses = getattr(self._provider_instance, "selection_status", {}) if self._provider_instance is not None else {}
+        rows: list[dict[str, object]] = []
+        for entry in self._symbol_entries:
+            status = statuses.get(str(entry["provider_symbol"]), {})
+            selected = bool(status.get("selected", False))
+            error = status.get("error")
+            rows.append({**entry, "selected": selected, "error": error, "selection_state": "selected" if selected else ("failed" if error else "configured")})
+        return rows
+
     def view(self) -> dict[str, object]:
-        return {"configuration": asdict(self.config), "runtime": asdict(self.runtime), "feeds": self.feed.reports()}
+        symbols = self.symbol_statuses()
+        return {
+            "configuration": asdict(self.config),
+            "runtime": asdict(self.runtime),
+            "feeds": self.feed.reports(),
+            "symbols": symbols,
+            "configured_instruments": len({str(row["canonical_instrument"]) for row in symbols}),
+            "selected_instruments": sum(1 for row in symbols if row["selected"]),
+            "failed_instruments": sum(1 for row in symbols if row["selection_state"] == "failed"),
+        }
 
 
 class ProviderSupervisor:

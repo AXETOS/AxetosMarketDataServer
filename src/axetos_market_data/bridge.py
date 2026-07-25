@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Iterable
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from .domain import Candle, Tick
 from .service import MarketDataService
@@ -16,88 +16,88 @@ from .symbols import SymbolResolver
 
 
 class BridgeHeartbeatRequest(BaseModel):
-    provider_key: str = Field(alias="ProviderKey")
-    terminal_instance_id: str = Field(alias="TerminalInstanceId")
-    broker_name: str | None = Field(default=None, alias="BrokerName")
-    server_name: str | None = Field(default=None, alias="ServerName")
-    account_login: int | None = Field(default=None, alias="AccountLogin")
-    time_utc: datetime = Field(alias="TimeUtc")
+    provider_key: str = Field(validation_alias=AliasChoices("ProviderKey", "providerKey"), serialization_alias="ProviderKey")
+    terminal_instance_id: str = Field(validation_alias=AliasChoices("TerminalInstanceId", "terminalInstanceId"), serialization_alias="TerminalInstanceId")
+    broker_name: str | None = Field(default=None, validation_alias=AliasChoices("BrokerName", "brokerName"), serialization_alias="BrokerName")
+    server_name: str | None = Field(default=None, validation_alias=AliasChoices("ServerName", "serverName"), serialization_alias="ServerName")
+    account_login: int | None = Field(default=None, validation_alias=AliasChoices("AccountLogin", "accountLogin"), serialization_alias="AccountLogin")
+    time_utc: datetime = Field(validation_alias=AliasChoices("TimeUtc", "timeUtc"), serialization_alias="TimeUtc")
     model_config = {"populate_by_name": True}
 
 
 class BridgeInstrument(BaseModel):
-    provider_symbol: str = Field(alias="ProviderSymbol")
-    canonical_instrument: str = Field(alias="CanonicalInstrument")
-    digits: int = Field(default=0, alias="Digits")
-    point: Decimal = Field(default=Decimal("0"), alias="Point")
-    is_visible: bool = Field(default=True, alias="IsVisible")
-    display_name: str | None = Field(default=None, alias="DisplayName")
-    description: str | None = Field(default=None, alias="Description")
-    path: str | None = Field(default=None, alias="Path")
-    asset_class: str | None = Field(default=None, alias="AssetClass")
-    is_selected: bool = Field(default=False, alias="IsSelected")
+    provider_symbol: str = Field(validation_alias=AliasChoices("ProviderSymbol", "providerSymbol"), serialization_alias="ProviderSymbol")
+    canonical_instrument: str = Field(validation_alias=AliasChoices("CanonicalInstrument", "canonicalInstrument"), serialization_alias="CanonicalInstrument")
+    digits: int = Field(default=0, validation_alias=AliasChoices("Digits", "digits"), serialization_alias="Digits")
+    point: Decimal = Field(default=Decimal("0"), validation_alias=AliasChoices("Point", "point"), serialization_alias="Point")
+    is_visible: bool = Field(default=True, validation_alias=AliasChoices("IsVisible", "isVisible"), serialization_alias="IsVisible")
+    display_name: str | None = Field(default=None, validation_alias=AliasChoices("DisplayName", "displayName"), serialization_alias="DisplayName")
+    description: str | None = Field(default=None, validation_alias=AliasChoices("Description", "description"), serialization_alias="Description")
+    path: str | None = Field(default=None, validation_alias=AliasChoices("Path", "path"), serialization_alias="Path")
+    asset_class: str | None = Field(default=None, validation_alias=AliasChoices("AssetClass", "assetClass"), serialization_alias="AssetClass")
+    is_selected: bool = Field(default=False, validation_alias=AliasChoices("IsSelected", "isSelected"), serialization_alias="IsSelected")
     model_config = {"populate_by_name": True}
 
 
 class BridgeInstrumentsRequest(BaseModel):
-    provider_key: str = Field(alias="ProviderKey")
-    terminal_instance_id: str = Field(alias="TerminalInstanceId")
-    time_utc: datetime = Field(alias="TimeUtc")
-    instruments: list[BridgeInstrument] = Field(default_factory=list, alias="Instruments")
+    provider_key: str = Field(validation_alias=AliasChoices("ProviderKey", "providerKey"), serialization_alias="ProviderKey")
+    terminal_instance_id: str = Field(validation_alias=AliasChoices("TerminalInstanceId", "terminalInstanceId"), serialization_alias="TerminalInstanceId")
+    time_utc: datetime = Field(validation_alias=AliasChoices("TimeUtc", "timeUtc"), serialization_alias="TimeUtc")
+    instruments: list[BridgeInstrument] = Field(default_factory=list, validation_alias=AliasChoices("Instruments", "instruments"), serialization_alias="Instruments")
     model_config = {"populate_by_name": True}
 
 
 class BridgeTick(BaseModel):
-    provider_symbol: str = Field(alias="ProviderSymbol")
-    canonical_instrument: str = Field(alias="CanonicalInstrument")
-    time_utc: datetime = Field(alias="TimeUtc")
-    bid: Decimal = Field(alias="Bid")
-    ask: Decimal = Field(alias="Ask")
-    last: Decimal | None = Field(default=None, alias="Last")
-    volume: Decimal | None = Field(default=None, alias="Volume")
-    received_utc: datetime | None = Field(default=None, alias="ReceivedUtc")
+    provider_symbol: str = Field(validation_alias=AliasChoices("ProviderSymbol", "providerSymbol"), serialization_alias="ProviderSymbol")
+    canonical_instrument: str = Field(validation_alias=AliasChoices("CanonicalInstrument", "canonicalInstrument"), serialization_alias="CanonicalInstrument")
+    time_utc: datetime = Field(validation_alias=AliasChoices("TimeUtc", "timeUtc"), serialization_alias="TimeUtc")
+    bid: Decimal = Field(validation_alias=AliasChoices("Bid", "bid"), serialization_alias="Bid")
+    ask: Decimal = Field(validation_alias=AliasChoices("Ask", "ask"), serialization_alias="Ask")
+    last: Decimal | None = Field(default=None, validation_alias=AliasChoices("Last", "last"), serialization_alias="Last")
+    volume: Decimal | None = Field(default=None, validation_alias=AliasChoices("Volume", "volume"), serialization_alias="Volume")
+    received_utc: datetime | None = Field(default=None, validation_alias=AliasChoices("ReceivedUtc", "receivedUtc"), serialization_alias="ReceivedUtc")
     model_config = {"populate_by_name": True}
 
 
 class BridgeTicksRequest(BaseModel):
-    provider_key: str = Field(alias="ProviderKey")
-    terminal_instance_id: str = Field(alias="TerminalInstanceId")
-    ticks: list[BridgeTick] = Field(default_factory=list, alias="Ticks")
+    provider_key: str = Field(validation_alias=AliasChoices("ProviderKey", "providerKey"), serialization_alias="ProviderKey")
+    terminal_instance_id: str = Field(validation_alias=AliasChoices("TerminalInstanceId", "terminalInstanceId"), serialization_alias="TerminalInstanceId")
+    ticks: list[BridgeTick] = Field(default_factory=list, validation_alias=AliasChoices("Ticks", "ticks"), serialization_alias="Ticks")
     model_config = {"populate_by_name": True}
 
 
 class BridgeQuotesRequest(BaseModel):
-    provider_key: str = Field(alias="ProviderKey")
-    terminal_instance_id: str = Field(alias="TerminalInstanceId")
-    quotes: list[BridgeTick] = Field(default_factory=list, alias="Quotes")
+    provider_key: str = Field(validation_alias=AliasChoices("ProviderKey", "providerKey"), serialization_alias="ProviderKey")
+    terminal_instance_id: str = Field(validation_alias=AliasChoices("TerminalInstanceId", "terminalInstanceId"), serialization_alias="TerminalInstanceId")
+    quotes: list[BridgeTick] = Field(default_factory=list, validation_alias=AliasChoices("Quotes", "quotes"), serialization_alias="Quotes")
     model_config = {"populate_by_name": True}
 
 
 class BridgeCandle(BaseModel):
-    time_utc: datetime = Field(alias="TimeUtc")
-    open: Decimal = Field(alias="Open")
-    high: Decimal = Field(alias="High")
-    low: Decimal = Field(alias="Low")
-    close: Decimal = Field(alias="Close")
-    tick_volume: int | None = Field(default=None, alias="TickVolume")
+    time_utc: datetime = Field(validation_alias=AliasChoices("TimeUtc", "timeUtc"), serialization_alias="TimeUtc")
+    open: Decimal = Field(validation_alias=AliasChoices("Open", "open"), serialization_alias="Open")
+    high: Decimal = Field(validation_alias=AliasChoices("High", "high"), serialization_alias="High")
+    low: Decimal = Field(validation_alias=AliasChoices("Low", "low"), serialization_alias="Low")
+    close: Decimal = Field(validation_alias=AliasChoices("Close", "close"), serialization_alias="Close")
+    tick_volume: int | None = Field(default=None, validation_alias=AliasChoices("TickVolume", "tickVolume"), serialization_alias="TickVolume")
     model_config = {"populate_by_name": True}
 
 
 class BridgeCandlesRequest(BaseModel):
-    provider_key: str = Field(alias="ProviderKey")
-    terminal_instance_id: str = Field(alias="TerminalInstanceId")
-    provider_symbol: str = Field(alias="ProviderSymbol")
-    canonical_instrument: str = Field(alias="CanonicalInstrument")
-    interval: str = Field(alias="Interval")
-    candles: list[BridgeCandle] = Field(default_factory=list, alias="Candles")
+    provider_key: str = Field(validation_alias=AliasChoices("ProviderKey", "providerKey"), serialization_alias="ProviderKey")
+    terminal_instance_id: str = Field(validation_alias=AliasChoices("TerminalInstanceId", "terminalInstanceId"), serialization_alias="TerminalInstanceId")
+    provider_symbol: str = Field(validation_alias=AliasChoices("ProviderSymbol", "providerSymbol"), serialization_alias="ProviderSymbol")
+    canonical_instrument: str = Field(validation_alias=AliasChoices("CanonicalInstrument", "canonicalInstrument"), serialization_alias="CanonicalInstrument")
+    interval: str = Field(validation_alias=AliasChoices("Interval", "interval"), serialization_alias="Interval")
+    candles: list[BridgeCandle] = Field(default_factory=list, validation_alias=AliasChoices("Candles", "candles"), serialization_alias="Candles")
     model_config = {"populate_by_name": True}
 
 
 class InstrumentSelectionRequest(BaseModel):
-    provider_key: str = Field(alias="ProviderKey")
-    terminal_instance_id: str = Field(alias="TerminalInstanceId")
-    provider_symbol: str = Field(alias="ProviderSymbol")
-    enabled: bool = Field(alias="Enabled")
+    provider_key: str = Field(validation_alias=AliasChoices("ProviderKey", "providerKey"), serialization_alias="ProviderKey")
+    terminal_instance_id: str = Field(validation_alias=AliasChoices("TerminalInstanceId", "terminalInstanceId"), serialization_alias="TerminalInstanceId")
+    provider_symbol: str = Field(validation_alias=AliasChoices("ProviderSymbol", "providerSymbol"), serialization_alias="ProviderSymbol")
+    enabled: bool = Field(validation_alias=AliasChoices("Enabled", "enabled"), serialization_alias="Enabled")
     model_config = {"populate_by_name": True}
 
 

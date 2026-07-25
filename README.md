@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.41.0
+## Version 0.42.0
 
-Version 0.41.0 makes MT5 bridge failures diagnosable and non-spammy. The bridge captures the real `WebRequest()` error before response decoding can overwrite it, uses the documented explicit-size GET overload for unauthenticated localhost requests, performs a startup transport self-test, and applies shared exponential retry backoff across all bridge endpoints. Uvicorn access logging is now disabled by default so dashboard polling no longer floods the console; enable it with `--access-log` or `AXETOS_ACCESS_LOG=true`.
+Version 0.42.0 restores MT5 bridge ingestion compatibility by accepting both camelCase payloads emitted by the MQL5 bridge and the existing PascalCase API contract. Heartbeats, instrument catalogues, ticks, quotes, candles, and selection requests now validate either naming convention without weakening field validation. The bridge captures the real `WebRequest()` error before response decoding can overwrite it, uses the documented explicit-size GET overload for unauthenticated localhost requests, performs a startup transport self-test, and applies shared exponential retry backoff across all bridge endpoints. Uvicorn access logging is now disabled by default so dashboard polling no longer floods the console; enable it with `--access-log` or `AXETOS_ACCESS_LOG=true`.
 
 ### MetaTrader 5 bridge
 

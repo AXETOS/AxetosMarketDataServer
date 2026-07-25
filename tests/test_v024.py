@@ -67,7 +67,7 @@ def test_backup_api(tmp_path: Path) -> None:
 
 
 def test_release_metadata_and_readme() -> None:
-    assert __version__ == "0.41.0"
+    assert __version__ == "0.42.0"
     readme = Path("README.md").read_text(encoding="utf-8")
-    assert "Version 0.41.0" in readme
+    assert "Version 0.42.0" in readme
     assert "axetos-market-data --database data/market_data.sqlite backup" in readme

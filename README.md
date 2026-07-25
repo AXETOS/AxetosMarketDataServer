@@ -4,6 +4,10 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.36.0
+
+Version 0.36.0 prevents accidental unauthenticated network exposure. The server now refuses to bind to a non-loopback interface such as `0.0.0.0` or `::` while authentication is disabled. Local development on `127.0.0.1`, `::1`, or `localhost` remains unchanged. Operators behind an external trusted access-control boundary can explicitly acknowledge the risk with `--allow-insecure-public-bind`. Docker Compose now enables authentication by default and requires separate administrator and MT5 bridge tokens before startup.
+
 ## Version 0.35.0
 
 Version 0.35.0 hardens machine-local runtime state against interrupted writes. Provider configuration and encrypted MT5 secrets are now written to a temporary file, flushed to durable storage, and atomically replaced, so the active JSON file is never exposed in a partially written state. Failed replacements preserve the previous file and clean up temporary artifacts. Secret files retain owner-only permissions on supported platforms.
@@ -17,6 +21,27 @@ Version 0.34.0 added continuous integration for both the default SQLite deployme
 The PostgreSQL integration test remains skipped during ordinary local runs unless `AXETOS_TEST_POSTGRES_URL` is configured.
 
 The current release retains the earlier feed and provider guarantees: normalized midpoint pricing prevents spread-only flicker from being treated as market movement; connected infrastructure keeps system health healthy while an instrument feed may be inactive; the dashboard separates configured, MT5-selected, monitored, and stored instruments; and MT5 startup uses conditional account authentication before resilient IPC recovery.
+
+## Secure network binding
+
+The default command binds only to `127.0.0.1`, so authentication may remain disabled for local development. Binding to another interface requires authentication:
+
+```powershell
+$env:AXETOS_AUTH_ENABLED="true"
+$env:AXETOS_ADMIN_TOKEN="replace-with-a-long-random-admin-token"
+$env:AXETOS_BRIDGE_TOKEN="replace-with-a-different-long-random-bridge-token"
+axetos-market-data-server --host 0.0.0.0
+```
+
+Viewer and operator tokens remain optional; without them, only the administrator token can access management endpoints. The MT5 ingestion endpoints use the separate bridge token.
+
+For a deployment already protected by a trusted reverse proxy or private network boundary, the safety check can be deliberately bypassed:
+
+```powershell
+axetos-market-data-server --host 0.0.0.0 --allow-insecure-public-bind
+```
+
+This override disables only the startup guard; it does not add authentication or transport encryption.
 
 ## MT5 terminal and account lifecycle
 

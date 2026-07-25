@@ -4,6 +4,20 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.40.0
+
+Version 0.40.0 restores the distributable MetaTrader 5 bridge source and hardens its shared HTTP transport against MQL5 `WebRequest()` error 4006. GET requests now pass an explicitly empty dynamic request buffer, while JSON POST requests remove the terminating null byte added by `StringToCharArray()` before submission. The included bridge defaults to `http://127.0.0.1:8000`, matching the current server CLI default.
+
+### MetaTrader 5 bridge
+
+The source EA is included at:
+
+```text
+bridges/mt5/Experts/AxetosMarketDataBridge.mq5
+```
+
+Compile it in MetaEditor, attach it to one chart in each MT5 terminal, and add the configured server origin (for example `http://127.0.0.1:8000`) under **Tools → Options → Expert Advisors → Allow WebRequest for listed URL**. Use a distinct provider key and bridge token for each configured terminal.
+
 ## Version 0.39.0
 
 Version 0.39.0 adds dedicated deployment probes. `GET /api/live` reports process liveness and uptime without depending on provider or database state. `GET /api/ready` verifies that the service can access its database and returns HTTP 503 when the server is not ready to accept traffic. Degraded provider availability remains ready because management, recovery, and historical-data operations are still available. These endpoints are suitable for Docker, Kubernetes, reverse-proxy, and load-balancer health checks.

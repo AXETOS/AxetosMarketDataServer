@@ -31,7 +31,7 @@ class _FakeConnection:
 
 
 def test_version_and_backend_detection(tmp_path):
-    assert __version__ == "0.39.0"
+    assert __version__ == "0.40.0"
     sqlite = DatabaseBackend(tmp_path / "market.sqlite")
     postgres = DatabaseBackend("postgresql://user:secret@localhost/market")
     assert sqlite.kind == "sqlite"

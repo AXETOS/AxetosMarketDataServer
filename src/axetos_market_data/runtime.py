@@ -35,6 +35,15 @@ class ProviderRuntime:
     ignored_unchanged_updates: int = 0
     recovery_attempts: int = 0
     recovery_candles_written: int = 0
+    terminal_running: bool = False
+    terminal_connected: bool = False
+    broker_connected: bool = False
+    account_logged_in: bool = False
+    account_login: int | None = None
+    account_server: str | None = None
+    account_company: str | None = None
+    account_name: str | None = None
+    login_attempted: bool = False
 
 
 class ProviderWorker:
@@ -91,6 +100,7 @@ class ProviderWorker:
             return MetaTrader5TickProvider(
                 symbols, self.config.terminal_path, self.config.provider_key,
                 self.config.batch_window_seconds, self.config.batch_limit, self.config.symbol_aliases, self.store,
+                self.config.account_login, self.config.account_server, self.config.password_env,
             )
         return MockTickProvider(symbols[0], self.config.poll_interval_seconds, provider=self.config.provider_key)
 
@@ -148,6 +158,7 @@ class ProviderWorker:
         try:
             provider = self._provider()
             self._provider_instance = provider
+            # stream() initializes/starts MT5 and authenticates before yielding its first tick.
             self.runtime.status = "Live"
             self.events.record("info", "provider.recovery", "Provider is live", provider=self.config.provider_key, details={"kind": self.config.kind})
             for tick in provider.stream():
@@ -203,6 +214,11 @@ class ProviderWorker:
 
     def view(self) -> dict[str, object]:
         symbols = self.symbol_statuses()
+        session = getattr(self._provider_instance, "session_status", {}) if self._provider_instance is not None else {}
+        for field in ("terminal_running", "terminal_connected", "broker_connected", "account_logged_in",
+                      "account_login", "account_server", "account_company", "account_name", "login_attempted"):
+            if field in session:
+                setattr(self.runtime, field, session[field])
         return {
             "configuration": asdict(self.config),
             "runtime": asdict(self.runtime),

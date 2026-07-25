@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -21,6 +22,9 @@ class MetaTrader5TickProvider:
         batch_limit: int = 50_000,
         symbol_aliases: dict[str, str] | None = None,
         store=None,
+        account_login: int | None = None,
+        account_server: str | None = None,
+        password_env: str | None = None,
     ) -> None:
         self.symbols = symbols
         self.terminal_path = terminal_path
@@ -30,6 +34,15 @@ class MetaTrader5TickProvider:
         self.last_batch_sizes: dict[str, int] = {}
         self.symbol_resolver = SymbolResolver(store=store, aliases=symbol_aliases)
         self._active_mt5 = None
+        self.account_login = account_login
+        self.account_server = account_server
+        self.password_env = password_env
+        self.session_status: dict[str, object] = {
+            "terminal_running": False, "terminal_connected": False, "broker_connected": False,
+            "account_logged_in": False, "account_login": None, "account_server": None,
+            "account_company": None, "account_name": None, "login_attempted": False,
+            "login_required": bool(account_login), "error": None,
+        }
         self.selection_status: dict[str, dict[str, object]] = {symbol: {"selected": False, "error": None} for symbol in symbols}
 
     @staticmethod
@@ -44,9 +57,75 @@ class MetaTrader5TickProvider:
         return mt5
 
     def _initialize(self, mt5) -> None:
+        # MetaTrader5.initialize() connects to an existing terminal or starts the configured
+        # terminal executable when it is not already running.
         ok = mt5.initialize(path=self.terminal_path) if self.terminal_path else mt5.initialize()
         if not ok:
+            self.session_status.update({"error": str(mt5.last_error()), "terminal_running": False})
             raise RuntimeError(f"MetaTrader5 initialization failed: {mt5.last_error()}")
+        self._ensure_session(mt5)
+
+    def _ensure_session(self, mt5) -> None:
+        terminal = mt5.terminal_info()
+        if terminal is None:
+            self.session_status.update({"terminal_running": True, "error": str(mt5.last_error())})
+            raise RuntimeError(f"MetaTrader5 terminal information unavailable: {mt5.last_error()}")
+
+        connected = bool(getattr(terminal, "connected", False))
+        account = mt5.account_info()
+        current_login = int(getattr(account, "login", 0) or 0) if account else None
+        current_server = str(getattr(account, "server", "") or "") if account else None
+        expected_server = (self.account_server or "").strip() or None
+        login_matches = self.account_login is None or current_login == int(self.account_login)
+        server_matches = expected_server is None or (current_server or "").casefold() == expected_server.casefold()
+
+        self.session_status.update({
+            "terminal_running": True,
+            "terminal_connected": True,
+            "broker_connected": connected,
+            "account_logged_in": account is not None,
+            "account_login": current_login,
+            "account_server": current_server,
+            "account_company": getattr(account, "company", None) if account else None,
+            "account_name": getattr(account, "name", None) if account else None,
+            "login_attempted": False,
+            "error": None,
+        })
+
+        # Do not send a login request when the desired account is already active.
+        if self.account_login is not None and not (login_matches and server_matches):
+            password = os.getenv(self.password_env or "") if self.password_env else None
+            if not password:
+                raise RuntimeError(
+                    f"MT5 account {self.account_login} is not active and password environment variable "
+                    f"{self.password_env or '<not configured>'} is unavailable"
+                )
+            self.session_status["login_attempted"] = True
+            kwargs = {"login": int(self.account_login), "password": password}
+            if expected_server:
+                kwargs["server"] = expected_server
+            if not mt5.login(**kwargs):
+                self.session_status["error"] = str(mt5.last_error())
+                raise RuntimeError(f"MetaTrader5 login failed: {mt5.last_error()}")
+            account = mt5.account_info()
+            current_login = int(getattr(account, "login", 0) or 0) if account else None
+            current_server = str(getattr(account, "server", "") or "") if account else None
+            if account is None or current_login != int(self.account_login) or (expected_server and current_server.casefold() != expected_server.casefold()):
+                raise RuntimeError("MetaTrader5 login verification failed")
+            self.session_status.update({
+                "broker_connected": bool(getattr(mt5.terminal_info(), "connected", False)),
+                "account_logged_in": True,
+                "account_login": current_login,
+                "account_server": current_server,
+                "account_company": getattr(account, "company", None),
+                "account_name": getattr(account, "name", None),
+                "error": None,
+            })
+
+        if not self.session_status["broker_connected"]:
+            raise RuntimeError("MetaTrader5 terminal is running but not connected to the broker")
+        if self.account_login is not None and not self.session_status["account_logged_in"]:
+            raise RuntimeError("MetaTrader5 account is not logged in")
 
     def test_connection(self) -> dict[str, object]:
         mt5 = self._module()
@@ -72,6 +151,7 @@ class MetaTrader5TickProvider:
                 "terminal_name": getattr(terminal, "name", None) if terminal else None,
                 "account_login": getattr(account, "login", None) if account else None,
                 "server": getattr(account, "server", None) if account else None,
+                "authentication": dict(self.session_status),
                 "symbols": symbols,
             }
         finally:

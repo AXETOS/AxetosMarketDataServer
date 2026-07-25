@@ -16,6 +16,9 @@ class ProviderConfig:
     symbols: list[str] | None = None
     symbol_aliases: dict[str, str] | None = None
     terminal_path: str | None = None
+    account_login: int | None = None
+    account_server: str | None = None
+    password_env: str | None = None
     priority: int = 100
     fallback_after_seconds: float = 10.0
     batch_window_seconds: int = 5

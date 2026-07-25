@@ -30,4 +30,4 @@ def test_authority_routes_using_canonical_policy(tmp_path: Path):
 
 def test_release_version():
     from axetos_market_data import __version__
-    assert __version__ == '0.32.0'
+    assert __version__ == '0.33.0'

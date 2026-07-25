@@ -73,6 +73,9 @@ class ProviderMaintenanceWorker:
                 self.config.provider_key,
                 self.config.batch_window_seconds,
                 self.config.batch_limit,
+                account_login=self.config.account_login,
+                account_server=self.config.account_server,
+                password_env=self.config.password_env,
             )
             history = HistoricalBackfillService(self.store)
             end = datetime.now(UTC)

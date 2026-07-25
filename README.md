@@ -4,6 +4,10 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.39.0
+
+Version 0.39.0 adds dedicated deployment probes. `GET /api/live` reports process liveness and uptime without depending on provider or database state. `GET /api/ready` verifies that the service can access its database and returns HTTP 503 when the server is not ready to accept traffic. Degraded provider availability remains ready because management, recovery, and historical-data operations are still available. These endpoints are suitable for Docker, Kubernetes, reverse-proxy, and load-balancer health checks.
+
 ## Version 0.38.0
 
 Version 0.38.0 fixes the dashboard aggregate market-feed status. A single inactive instrument no longer forces the entire market feed to display `INACTIVE` while other selected instruments are still receiving live observations. Mixed operational and degraded feeds now report `PARTIAL`; all-live or live-and-quiet combinations report `LIVE`; and the feed-status API includes per-state counts for diagnostics.
@@ -316,6 +320,8 @@ Open:
 
 - Control center: `http://127.0.0.1:8000/`
 - OpenAPI documentation: `http://127.0.0.1:8000/docs`
+- Liveness probe: `http://127.0.0.1:8000/api/live`
+- Readiness probe: `http://127.0.0.1:8000/api/ready`
 - Health endpoint: `http://127.0.0.1:8000/api/health`
 
 The default files are created under `data/`:
@@ -333,6 +339,8 @@ The web UI shows database statistics and the live state of each configured provi
 
 | Method | Endpoint | Purpose |
 |---|---|---|
+| `GET` | `/api/live` | Process liveness and uptime |
+| `GET` | `/api/ready` | Traffic readiness; returns HTTP 503 when unavailable |
 | `GET` | `/api/health` | Server health and version |
 | `GET` | `/api/storage` | Active storage backend and backend capabilities |
 | `GET` | `/api/operational-events` | Query structured operational events with filtering and pagination |
@@ -396,7 +404,7 @@ Copy-Item .env.example .env
 docker compose up --build -d
 ```
 
-The management UI is available at `http://localhost:8000`, and the health endpoint is available at `http://localhost:8000/api/health`. Both services have health checks and restart policies. PostgreSQL data, application runtime data, and backup archives use named Docker volumes.
+The management UI is available at `http://localhost:8000`, and the health endpoint is available at `http://localhost:8000/api/health`. Both services have readiness health checks and restart policies. PostgreSQL data, application runtime data, and backup archives use named Docker volumes.
 
 ```powershell
 docker compose ps

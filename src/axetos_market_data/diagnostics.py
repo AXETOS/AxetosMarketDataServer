@@ -58,6 +58,31 @@ def build_health(store: Any, supervisor: Any, version: str) -> dict[str, object]
     }
 
 
+
+def build_liveness(version: str, started_utc: datetime) -> dict[str, object]:
+    now = datetime.now(UTC)
+    return {
+        "product": "Axetos Market Data Server",
+        "version": version,
+        "status": "alive",
+        "started_utc": started_utc.isoformat(),
+        "checked_utc": now.isoformat(),
+        "uptime_seconds": max(0.0, (now - started_utc).total_seconds()),
+    }
+
+
+def build_readiness(store: Any, supervisor: Any, version: str) -> dict[str, object]:
+    health = build_health(store, supervisor, version)
+    ready = health["status"] != "unhealthy"
+    return {
+        "product": health["product"],
+        "version": health["version"],
+        "status": "ready" if ready else "not_ready",
+        "ready": ready,
+        "checked_utc": health["checked_utc"],
+        "health": health,
+    }
+
 def build_metrics(store: Any, supervisor: Any, started_utc: datetime) -> dict[str, object]:
     now = datetime.now(UTC)
     statistics = store.statistics()

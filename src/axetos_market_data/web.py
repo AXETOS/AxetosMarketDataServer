@@ -22,7 +22,7 @@ from .providers.yahoo import YahooHistoricalProvider
 from .calendar import MarketCalendar
 from datetime import datetime, UTC, timedelta
 from .storage import MarketDataStore
-from .diagnostics import build_health, build_metrics, prometheus_text
+from .diagnostics import build_health, build_liveness, build_metrics, build_readiness, prometheus_text
 from .housekeeping import HousekeepingService, RetentionPolicy
 from .scheduler import MaintenanceScheduler
 from . import __version__
@@ -318,6 +318,17 @@ def create_app(
     @app.get("/api/auth/status")
     def auth_status() -> dict[str, object]:
         return {"enabled": security.enabled, "management_roles": ["viewer", "operator", "administrator"], "bridge_authentication": security.enabled}
+
+    @app.get("/api/live")
+    def liveness() -> dict[str, object]:
+        return build_liveness(__version__, started_utc)
+
+    @app.get("/api/ready")
+    def readiness(response: Response) -> dict[str, object]:
+        result = build_readiness(store, supervisor, __version__)
+        if not result["ready"]:
+            response.status_code = 503
+        return result
 
     @app.get("/api/health")
     def health() -> dict[str, object]:

@@ -257,7 +257,11 @@ def create_app(
         events.record("info", "database.backup", "Database backup created", details=result)
         return result
     housekeeping = HousekeepingService(store)
-    bridge = Mt5BridgeService(store)
+    bridge = Mt5BridgeService(
+        store,
+        heartbeat_sink=supervisor.record_bridge_heartbeat,
+        observation_sink=supervisor.record_bridge_observation,
+    )
     quality = CandleQualityService(store)
     events = OperationalEventService(store)
     calendar = MarketCalendar()

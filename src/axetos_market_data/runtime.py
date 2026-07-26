@@ -155,6 +155,48 @@ class ProviderWorker:
         self.events.record("info", "feed.inactive_interval", "Inactive interval contained no meaningful market movement", provider=tick.provider, instrument=tick.instrument, details={"received": len(candles), "from_utc": history_start.isoformat(), "to_utc": history_end.isoformat()})
         return "inactive_interval_no_candles", False
 
+    @staticmethod
+    def _heartbeat_is_fresh(heartbeat: dict[str, object] | None, max_age_seconds: float = 30.0) -> bool:
+        if heartbeat is None or not heartbeat.get("received_utc"):
+            return False
+        try:
+            received = datetime.fromisoformat(str(heartbeat["received_utc"]))
+            if received.tzinfo is None:
+                received = received.replace(tzinfo=UTC)
+            return (datetime.now(UTC) - received).total_seconds() <= max_age_seconds
+        except (TypeError, ValueError):
+            return False
+
+    def record_bridge_heartbeat(self, value: dict[str, object]) -> None:
+        self.runtime.status = "Live"
+        self.runtime.terminal_running = True
+        self.runtime.terminal_connected = True
+        self.runtime.broker_connected = True
+        self.runtime.account_logged_in = value.get("account_login") is not None
+        self.runtime.account_login = value.get("account_login")
+        self.runtime.account_server = value.get("server_name")
+        self.runtime.last_heartbeat_utc = datetime.now(UTC).isoformat()
+        self.runtime.reconnecting = False
+
+    def record_bridge_observation(self, tick, accepted: bool) -> None:
+        decision = self.feed.observe(tick)
+        if accepted:
+            self.authority.record_tick(self.config.provider_key, tick.instrument, tick.timestamp)
+            self.runtime.accepted_market_ticks += 1
+        else:
+            self.runtime.ignored_unchanged_updates += 1
+        if self.authority.is_authoritative(self.config.provider_key, tick.instrument, tick.timestamp):
+            self.runtime.authoritative_ticks += 1
+        else:
+            self.runtime.standby_ticks += 1
+        self.runtime.ticks_received += 1
+        self.runtime.last_tick_utc = tick.timestamp.isoformat()
+        self.runtime.last_heartbeat_utc = datetime.now(UTC).isoformat()
+        self.runtime.status = "Live"
+        self.runtime.terminal_running = True
+        self.runtime.terminal_connected = True
+        self.runtime.broker_connected = True
+
     def _run(self) -> None:
         self.runtime.status = "Starting"
         self.runtime.started_utc = datetime.now(UTC).isoformat()
@@ -167,19 +209,27 @@ class ProviderWorker:
             # MQL bridge heartbeat exists, the bridge is the provider boundary and this
             # worker must not open a competing direct terminal session.
             heartbeat = self.store.latest_bridge_heartbeat(self.config.provider_key) if self.config.kind.lower() == "mt5" else None
-            if heartbeat is not None:
-                self.runtime.status = "Live"
-                self.runtime.terminal_running = True
-                self.runtime.terminal_connected = True
-                self.runtime.broker_connected = True
-                self.runtime.account_logged_in = heartbeat.get("account_login") is not None
-                self.runtime.account_login = heartbeat.get("account_login")
-                self.runtime.account_server = heartbeat.get("server_name")
+            if self.config.kind.lower() == "mt5" and not self._heartbeat_is_fresh(heartbeat):
+                # A persisted heartbeat from an earlier server run must not permanently
+                # suppress live ingestion. Give the MQL bridge a short reconnect window.
+                deadline = time.monotonic() + 10.0
+                while not self._stop.is_set() and time.monotonic() < deadline:
+                    heartbeat = self.store.latest_bridge_heartbeat(self.config.provider_key)
+                    if self._heartbeat_is_fresh(heartbeat):
+                        break
+                    self._stop.wait(0.25)
+            if self._heartbeat_is_fresh(heartbeat):
+                self.record_bridge_heartbeat(heartbeat)
                 self.events.record("info", "provider.bridge", "Provider is managed by the MT5 bridge", provider=self.config.provider_key)
                 while not self._stop.wait(1.0):
                     current = self.store.latest_bridge_heartbeat(self.config.provider_key)
-                    if current is not None:
-                        self.runtime.last_heartbeat_utc = str(current.get("received_utc"))
+                    if self._heartbeat_is_fresh(current):
+                        self.record_bridge_heartbeat(current)
+                    else:
+                        self.runtime.status = "Reconnecting"
+                        self.runtime.terminal_connected = False
+                        self.runtime.broker_connected = False
+                        self.runtime.reconnecting = True
                 return
             provider = self._provider()
             self._provider_instance = provider
@@ -308,6 +358,16 @@ class ProviderSupervisor:
 
     def get(self, provider_key: str) -> ProviderWorker | None:
         with self._lock: return self._workers.get(provider_key)
+
+    def record_bridge_heartbeat(self, provider_key: str, value: dict[str, object]) -> None:
+        worker = self.get(provider_key)
+        if worker is not None:
+            worker.record_bridge_heartbeat(value)
+
+    def record_bridge_observation(self, tick, accepted: bool) -> None:
+        worker = self.get(tick.provider)
+        if worker is not None:
+            worker.record_bridge_observation(tick, accepted)
 
     def upsert(self, config: ProviderConfig) -> dict[str, object]:
         with self._lock:

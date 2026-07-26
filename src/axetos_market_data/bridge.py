@@ -6,7 +6,7 @@ from threading import RLock
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Iterable
+from typing import Callable, Iterable
 
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -116,9 +116,17 @@ class QueueStats:
 class Mt5BridgeService:
     ALLOWED_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
 
-    def __init__(self, store: MarketDataStore, max_queue_batches: int = 1000) -> None:
+    def __init__(
+        self,
+        store: MarketDataStore,
+        max_queue_batches: int = 1000,
+        heartbeat_sink: Callable[[str, dict[str, object]], None] | None = None,
+        observation_sink: Callable[[Tick, bool], None] | None = None,
+    ) -> None:
         self.store = store
         self.symbols = SymbolResolver(store)
+        self._heartbeat_sink = heartbeat_sink
+        self._observation_sink = observation_sink
         self._queue: queue.Queue[BridgeTicksRequest | None] = queue.Queue(maxsize=max_queue_batches)
         self.stats = QueueStats()
         self._services: dict[tuple[str, str], MarketDataService] = {}
@@ -139,7 +147,10 @@ class Mt5BridgeService:
 
     def heartbeat(self, request: BridgeHeartbeatRequest) -> None:
         self.validate_identity(request.provider_key, request.terminal_instance_id)
-        self.store.upsert_bridge_heartbeat(request.model_dump(by_alias=False))
+        value = request.model_dump(by_alias=False)
+        self.store.upsert_bridge_heartbeat(value)
+        if self._heartbeat_sink is not None:
+            self._heartbeat_sink(request.provider_key, value)
 
     def instruments(self, request: BridgeInstrumentsRequest) -> int:
         self.validate_identity(request.provider_key, request.terminal_instance_id)
@@ -201,10 +212,14 @@ class Mt5BridgeService:
         with self._ingest_lock:
             previous = self._last_ingested.get(key)
             if previous is not None and tick.timestamp <= previous:
+                if self._observation_sink is not None:
+                    self._observation_sink(tick, False)
                 return False
             service = self._services.setdefault(service_key, MarketDataService(self.store))
             service.run([tick])
             self._last_ingested[key] = tick.timestamp
+            if self._observation_sink is not None:
+                self._observation_sink(tick, True)
             return True
 
     def candles(self, request: BridgeCandlesRequest) -> int:

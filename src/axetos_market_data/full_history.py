@@ -21,6 +21,9 @@ class InstrumentProgress:
     bars_inserted: int = 0
     current_request_id: str | None = None
     error: str | None = None
+    retry_count: int = 0
+    unavailable_ranges: int = 0
+    last_error_code: int | None = None
 
 
 @dataclass(slots=True)
@@ -103,26 +106,47 @@ class FullHistoryBackfillManager:
             if item.cursor_end < earliest:
                 item.status = "completed"
 
-    def batch_result(self, provider_key: str, request_id: str, bars_received: int, bars_inserted: int, completed: bool) -> None:
+    def batch_result(self, provider_key: str, request_id: str, bars_received: int, bars_inserted: int, completed: bool, *, unavailable: bool = False, error_code: int | None = None) -> None:
         with self._lock:
             item = self._active_item(provider_key, request_id)
             if item is None:
                 return
+            item.last_error_code = error_code
+            if unavailable:
+                item.unavailable_ranges += 1
+                item.retry_count = 0
+                item.error = f"Provider has no M1 history for requested range (MT5 error {error_code})" if error_code else "Provider has no M1 history for requested range"
+                self._advance_batch_cursor(provider_key, item)
+                return
             if not completed:
                 item.current_request_id = None
+                item.retry_count += 1
                 item.status = "retrying"
+                item.error = f"Transient MT5 history failure (error {error_code}); retry {item.retry_count}/3" if error_code else f"Transient MT5 history failure; retry {item.retry_count}/3"
+                if item.retry_count >= 3:
+                    item.unavailable_ranges += 1
+                    item.retry_count = 0
+                    item.error = f"Skipped range after 3 failed attempts (last MT5 error {error_code})" if error_code else "Skipped range after 3 failed attempts"
+                    self._advance_batch_cursor(provider_key, item)
                 return
+            item.retry_count = 0
+            item.error = None
             item.batches_completed += 1
             item.bars_received += max(0, bars_received)
             item.bars_inserted += max(0, bars_inserted)
-            assert item.cursor_end is not None
-            batch_start = max(item.earliest_available or item.cursor_end, item.cursor_end - timedelta(days=self._batch_days) + timedelta(minutes=1))
-            item.cursor_end = batch_start - timedelta(minutes=1)
-            item.current_request_id = None
-            if item.earliest_available is None or item.cursor_end < item.earliest_available:
-                item.status = "completed"
-                if self._on_instrument_completed is not None:
-                    self._on_instrument_completed(provider_key, item.instrument)
+            self._advance_batch_cursor(provider_key, item)
+
+    def _advance_batch_cursor(self, provider_key: str, item: InstrumentProgress) -> None:
+        assert item.cursor_end is not None
+        batch_start = max(item.earliest_available or item.cursor_end, item.cursor_end - timedelta(days=self._batch_days) + timedelta(minutes=1))
+        item.cursor_end = batch_start - timedelta(minutes=1)
+        item.current_request_id = None
+        if item.earliest_available is None or item.cursor_end < item.earliest_available:
+            item.status = "completed"
+            if self._on_instrument_completed is not None:
+                self._on_instrument_completed(provider_key, item.instrument)
+        else:
+            item.status = "importing"
 
     def status(self, provider_key: str | None = None) -> dict[str, object]:
         with self._lock:
@@ -173,6 +197,9 @@ class FullHistoryBackfillManager:
                     "bars_received": item.bars_received,
                     "bars_inserted": item.bars_inserted,
                     "error": item.error,
+                    "retry_count": item.retry_count,
+                    "unavailable_ranges": item.unavailable_ranges,
+                    "last_error_code": item.last_error_code,
                 }
                 for item in job.instruments
             ],

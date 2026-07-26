@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.16"
+#property version   "1.17"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -464,9 +464,10 @@ bool SendCandlesWithCoverage(string symbol, ENUM_TIMEFRAMES timeframe, string in
 
 
 bool SendCandlesForDateRange(string symbol, ENUM_TIMEFRAMES timeframe, string interval,
-                             string start_date, string end_date, int &copied_out, string request_id)
+                             string start_date, string end_date, int &copied_out, int &error_out, string request_id)
 {
    copied_out = 0;
+   error_out = 0;
 
    string normalized_start = start_date;
    string normalized_end = end_date;
@@ -491,6 +492,7 @@ bool SendCandlesForDateRange(string symbol, ENUM_TIMEFRAMES timeframe, string in
    ResetLastError();
    int copied = CopyRates(symbol, timeframe, from_time, to_time, rates);
    int copy_error = GetLastError();
+   error_out = copy_error;
    copied_out = (copied > 0 ? copied : 0);
    if(copied <= 0)
    {
@@ -536,6 +538,48 @@ bool SendCandlesForDateRange(string symbol, ENUM_TIMEFRAMES timeframe, string in
 }
 
 
+bool FindEarliestRetrievableM1(string symbol, datetime &earliest_out)
+{
+   earliest_out = 0;
+   long advertised = 0;
+   if(!SeriesInfoInteger(symbol, PERIOD_M1, SERIES_SERVER_FIRSTDATE, advertised) || advertised <= 0)
+      return false;
+
+   datetime probe_start = (datetime)advertised;
+   datetime now_time = TimeCurrent();
+   const int probe_days = 3;
+   const int max_probes = 4096;
+   for(int probe = 0; probe < max_probes && probe_start <= now_time; probe++)
+   {
+      datetime probe_end = probe_start + probe_days * 86400 - 60;
+      if(probe_end > now_time) probe_end = now_time;
+      MqlRates rates[];
+      ArraySetAsSeries(rates, false);
+      ResetLastError();
+      int copied = CopyRates(symbol, PERIOD_M1, probe_start, probe_end, rates);
+      int copy_error = GetLastError();
+      if(copied > 0)
+      {
+         earliest_out = rates[0].time;
+         ResetLastError();
+         return true;
+      }
+
+      // 4401 means the broker has no history in this range. Advance the probe
+      // instead of advertising an unusable SERIES_SERVER_FIRSTDATE boundary.
+      if(copy_error != 0 && copy_error != 4401)
+      {
+         PrintFormat("Axetos MT5 Bridge: availability probe failed for %s, %s through %s (%d).",
+                     symbol, TimeToString(probe_start, TIME_DATE|TIME_MINUTES),
+                     TimeToString(probe_end, TIME_DATE|TIME_MINUTES), copy_error);
+      }
+      probe_start = probe_end + 60;
+      ResetLastError();
+   }
+   return false;
+}
+
+
 void RefreshRepairRequest()
 {
    string path = "/api/market-data/mt5/repair-request.txt?providerKey=" + InpProviderKey +
@@ -565,9 +609,9 @@ void RefreshRepairRequest()
    if(command == "AVAILABILITY" && part_count == 4)
    {
       string request_id = parts[3];
-      long earliest = 0;
+      datetime earliest = 0;
       bool ok = resolved != "" && SymbolSelect(resolved, true) &&
-                SeriesInfoInteger(resolved, PERIOD_M1, SERIES_SERVER_FIRSTDATE, earliest);
+                FindEarliestRetrievableM1(resolved, earliest);
       string result_path = "/api/market-data/mt5/history-availability?providerKey=" + InpProviderKey +
                            "&requestId=" + request_id;
       if(ok && earliest > 0)
@@ -588,8 +632,10 @@ void RefreshRepairRequest()
 
    bool completed = false;
    int copied = 0;
+   int copy_error = 0;
    if(resolved != "" && SymbolSelect(resolved, true))
-      completed = SendCandlesForDateRange(resolved, PERIOD_M1, "1m", start_time, end_time, copied, request_id);
+      completed = SendCandlesForDateRange(resolved, PERIOD_M1, "1m", start_time, end_time, copied, copy_error, request_id);
+   bool unavailable = (!completed && copy_error == 4401);
 
    string result_path = "/api/market-data/mt5/repair-result?providerKey=" + InpProviderKey +
                         "&terminalInstanceId=" + g_terminal_id +
@@ -597,6 +643,8 @@ void RefreshRepairRequest()
                         "&interval=1m&completed=" + (completed ? "true" : "false") +
                         "&barsReceived=" + IntegerToString(copied) +
                         "&barsInserted=" + IntegerToString(copied) +
+                        "&unavailable=" + (unavailable ? "true" : "false") +
+                        "&errorCode=" + IntegerToString(copy_error) +
                         "&requestId=" + request_id;
    PostJson(result_path, "{}");
 }

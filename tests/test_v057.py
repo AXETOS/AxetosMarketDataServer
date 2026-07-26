@@ -44,7 +44,7 @@ def test_management_ui_removes_duplicate_symbol_summary_and_adds_full_history():
 
 def test_bridge_is_server_controlled_and_reports_availability():
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "1.16"' in source
+    assert '#property version   "1.17"' in source
     assert "SERIES_SERVER_FIRSTDATE" in source
     assert "AVAILABILITY" in source
     assert "BACKFILL" in source

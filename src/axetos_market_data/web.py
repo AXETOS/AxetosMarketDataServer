@@ -444,9 +444,14 @@ def create_app(
         request_id: str = Query(alias="requestId"),
         bars_received: int = Query(default=0, alias="barsReceived"),
         bars_inserted: int = Query(default=0, alias="barsInserted"),
+        unavailable: bool = Query(default=False),
+        error_code: int | None = Query(default=None, alias="errorCode"),
     ) -> dict[str, object]:
         _ = (terminal_instance_id, provider_symbol, interval)
-        full_history.batch_result(provider_key, request_id, bars_received, bars_inserted, completed)
+        full_history.batch_result(
+            provider_key, request_id, bars_received, bars_inserted, completed,
+            unavailable=unavailable, error_code=error_code,
+        )
         return {"accepted": True, "requestId": request_id}
 
     @app.post("/api/market-data/mt5/history-availability")

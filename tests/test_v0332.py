@@ -5,7 +5,7 @@ from axetos_market_data import __version__
 
 def test_provider_form_formats_structured_api_errors():
     source = Path("src/axetos_market_data/web.py").read_text(encoding="utf-8")
-    assert __version__ == "0.54.0"
+    assert __version__ == "0.55.0"
     assert "const apiError=" in source
     assert "Array.isArray(detail)" in source
     assert "error.textContent=apiError(payload" in source

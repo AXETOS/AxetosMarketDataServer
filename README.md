@@ -4,11 +4,11 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.54.0
+## Version 0.55.0
 
 
-Version 0.54.0 pins each live quote stream to the server-selected canonical provider. The quote endpoint falls back only when that provider has no fresh quote, preventing rapid broker switching and artificial bid/ask spread spikes in consuming clients.
-Version 0.54.0 restores the proven single-collector architecture: MT5 bridges submit one provider-scoped tick stream, the server stores the freshest tick/quote, builds live one-minute candles only from that stream, and derives every larger timeframe from accepted one-minute candles. The bridge no longer uploads a competing completed minute every minute. Historical one-minute backfill remains available, but long identical flat runs and unresolved trailing flat runs are filtered before persistence. MT5 bridge version 1.15 accompanies this release.
+Version 0.55.0 pins each live quote stream to the server-selected canonical provider. The quote endpoint falls back only when that provider has no fresh quote, preventing rapid broker switching and artificial bid/ask spread spikes in consuming clients.
+Version 0.55.0 restores the proven single-collector architecture: MT5 bridges submit one provider-scoped tick stream, the server stores the freshest tick/quote, builds live one-minute candles only from that stream, and derives every larger timeframe from accepted one-minute candles. The bridge no longer uploads a competing completed minute every minute. Historical one-minute backfill remains available, but long identical flat runs and unresolved trailing flat runs are filtered before persistence. MT5 bridge version 1.15 accompanies this release.
 
 ## Version 0.47.1
 
@@ -608,6 +608,6 @@ Derived intervals are built only from stored lower-level server candles:
 MT5 historical bridge ingestion accepts authoritative `1m` history only; all larger intervals are rebuilt by the server.
 
 
-## v0.54.0 server-controlled MT5 subscriptions
+## v0.55.0 server-controlled MT5 subscriptions
 
 The control plane is authoritative: `GET /api/market-data/mt5/enabled-symbols.txt` returns the exact configured symbols for the requested provider. The bridge applies that list every refresh cycle, deselects removed instruments, and submits ticks, completed minute bars, and backfill only for the active server-selected set. An empty server selection stops streaming.

@@ -1016,6 +1016,29 @@ def create_app(
             raise HTTPException(404, "No quote is available for the requested instrument")
         bid = Decimal(str(value["bid"]))
         ask = Decimal(str(value["ask"]))
+
+        # A fresh bridge heartbeat is connection evidence, not proof that the market is
+        # trading.  When the newest quote is still equal to the last completed candle
+        # after the short-gap window, expose no tradable quote.  This prevents weekend
+        # heartbeats from keeping bid/ask and a temporary flat candle alive in clients.
+        quote_mid = (bid + ask) / Decimal("2")
+        latest_completed = next((
+            candle for candle in reversed(store.read_candles(instrument, "1m", 10, active_provider))
+            if candle.complete
+        ), None)
+        feed_report = next((
+            report for report in supervisor.feed_reports()
+            if report.get("provider") == active_provider and report.get("instrument") == instrument
+        ), None)
+        unchanged_closed = (
+            latest_completed is not None
+            and now - latest_completed.open_time >= timedelta(minutes=60)
+            and quote_mid == latest_completed.close
+        )
+        inactive_feed = feed_report is not None and feed_report.get("feed_state") in {"STALLED", "INACTIVE"}
+        if unchanged_closed or inactive_feed:
+            raise HTTPException(404, "Market is not producing a current tradable quote")
+
         return {
             "instrument": instrument,
             "provider": value["provider_key"],

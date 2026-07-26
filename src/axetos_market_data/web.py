@@ -20,6 +20,7 @@ from .history import HistoricalBackfillService
 from .providers.mt5 import MetaTrader5TickProvider
 from .providers.yahoo import YahooHistoricalProvider
 from .calendar import MarketCalendar
+from .clock import server_now
 from datetime import datetime, UTC, timedelta
 from decimal import Decimal
 from .storage import MarketDataStore
@@ -972,13 +973,45 @@ def create_app(
 
     @app.get("/api/quotes/{instrument:path}")
     def latest_quote(instrument: str, provider: str | None = None) -> dict[str, object]:
-        # Live display must use the freshest server-received tick. Static provider
-        # priority must never pin the client to an older quote while another configured
-        # provider is actively streaming. Explicit provider requests remain strict.
+        # Keep one provider authoritative for a live quote stream. Selecting whichever
+        # provider happened to post last made the client oscillate between brokers and
+        # produced artificial spread spikes. Explicit provider requests are strict.
         active_provider = provider
-        value = store.latest_bridge_quote(instrument, provider)
-        if provider is None and value is not None:
-            active_provider = str(value["provider_key"])
+        value = None
+        if active_provider is None:
+            configs = [
+                {"provider_key": p.provider_key, "enabled": p.enabled, "priority": p.priority}
+                for p in config_store.read_all()
+            ]
+            route = choose_canonical_source(
+                instrument, configs, store.list_symbol_policies(instrument=instrument)
+            )
+            preferred = route.get("preferred")
+            if isinstance(preferred, dict):
+                active_provider = str(preferred["provider_key"])
+
+        if active_provider is not None:
+            value = store.latest_bridge_quote(instrument, active_provider)
+
+        # Availability fallback is allowed only when the canonical provider has no
+        # recent quote. It is not evaluated on every tick, preventing provider hopping.
+        now = server_now()
+        if provider is None:
+            canonical_is_stale = (
+                value is not None and
+                now - datetime.fromisoformat(str(value["received_utc"])) > timedelta(seconds=30)
+            )
+            if value is None or canonical_is_stale:
+                fallback = store.latest_bridge_quote(instrument)
+                if fallback is not None:
+                    fallback_received = datetime.fromisoformat(str(fallback["received_utc"]))
+                    # With no canonical quote, return the newest known value and let the
+                    # response timestamp communicate staleness. Replace an existing
+                    # canonical quote only when the fallback is fresh.
+                    if value is None or now - fallback_received <= timedelta(seconds=30):
+                        value = fallback
+                        active_provider = str(fallback["provider_key"])
+
         if value is None:
             raise HTTPException(404, "No quote is available for the requested instrument")
         bid = Decimal(str(value["bid"]))

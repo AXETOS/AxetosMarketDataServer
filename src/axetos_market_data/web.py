@@ -972,21 +972,13 @@ def create_app(
 
     @app.get("/api/quotes/{instrument:path}")
     def latest_quote(instrument: str, provider: str | None = None) -> dict[str, object]:
+        # Live display must use the freshest server-received tick. Static provider
+        # priority must never pin the client to an older quote while another configured
+        # provider is actively streaming. Explicit provider requests remain strict.
         active_provider = provider
-        if active_provider is None:
-            configs = [
-                {"provider_key": p.provider_key, "enabled": p.enabled, "priority": p.priority}
-                for p in config_store.read_all()
-            ]
-            route = choose_canonical_source(instrument, configs, store.list_symbol_policies(instrument=instrument))
-            preferred = route.get("preferred")
-            if isinstance(preferred, dict):
-                active_provider = str(preferred["provider_key"])
-        value = store.latest_bridge_quote(instrument, active_provider)
-        if provider is None and value is None:
-            value = store.latest_bridge_quote(instrument)
-            if value is not None:
-                active_provider = str(value["provider_key"])
+        value = store.latest_bridge_quote(instrument, provider)
+        if provider is None and value is not None:
+            active_provider = str(value["provider_key"])
         if value is None:
             raise HTTPException(404, "No quote is available for the requested instrument")
         bid = Decimal(str(value["bid"]))

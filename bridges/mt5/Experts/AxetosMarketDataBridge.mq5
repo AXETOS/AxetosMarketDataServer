@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.14"
+#property version   "1.15"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -80,8 +80,8 @@ void OnTimer()
       RefreshRepairRequest();
    }
 
+   // Live candles are built by the server from this single tick stream.
    SendCurrentTicks();
-   SendCompletedMinuteBars();
 
    if(InpSendHistoricalBars && g_backfill_enabled)
       SendNextBackfillJob();
@@ -427,22 +427,6 @@ void SendCurrentTicks()
       "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"ticks\":[%s]}",
       JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), items);
    PostJson("/api/market-data/ingest/mt5/ticks", json);
-}
-
-void SendCompletedMinuteBars()
-{
-   for(int i = 0; i < ArraySize(g_symbols); i++)
-   {
-      datetime current_open = iTime(g_symbols[i], PERIOD_M1, 0);
-      if(current_open <= 0 || current_open == g_last_m1_bar[i])
-         continue;
-
-      // Send exactly the newly completed minute. The server deduplicates as a second
-      // safety net when more than one bridge instance is accidentally attached.
-      int copied = 0;
-      if(SendCandles(g_symbols[i], PERIOD_M1, "1m", 1, 1, copied))
-         g_last_m1_bar[i] = current_open;
-   }
 }
 
 int BackfillTargetBars(string interval)

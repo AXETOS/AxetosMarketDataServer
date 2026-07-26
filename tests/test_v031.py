@@ -5,10 +5,10 @@ from axetos_market_data.endurance import EnduranceRunner
 
 
 def test_v031_version_readme_and_two_row_toolbar():
-    assert __version__ == "0.52.0"
+    assert __version__ == "0.53.0"
     readme = Path("README.md").read_text(encoding="utf-8")
     web = Path("src/axetos_market_data/web.py").read_text(encoding="utf-8")
-    assert "## Version 0.52.0" in readme
+    assert "## Version 0.53.0" in readme
     assert "axetos-market-data endurance" in readme
     assert 'class="toolbar-actions"' in web
     assert web.count('class="toolbar-row"') >= 2

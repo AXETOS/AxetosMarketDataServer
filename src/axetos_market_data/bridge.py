@@ -4,7 +4,7 @@ import queue
 import threading
 from threading import RLock
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Callable, Iterable
 
@@ -176,12 +176,11 @@ class Mt5BridgeService:
         return len(request.ticks)
 
     def quotes(self, request: BridgeQuotesRequest) -> int:
-        """Persist provider-scoped quotes and use them as the live candle source.
+        """Persist provider-scoped quote snapshots for display only.
 
-        MT5 bridge installations may submit quote snapshots without a separate tick batch.
-        In that mode the quote is still an authoritative market observation and must reach
-        the server candle builder. Duplicate or older observations are ignored per
-        provider/instrument so quote and tick endpoints can safely coexist.
+        Candle construction has exactly one live input: the tick ingestion queue. Quote
+        snapshots never enter the candle builder, preventing duplicate observations and
+        competing live candle paths.
         """
         self.validate_identity(request.provider_key, request.terminal_instance_id)
         accepted = 0
@@ -197,14 +196,9 @@ class Mt5BridgeService:
             value["canonical_instrument"] = instrument
             value["time_utc"] = source_time
             self.store.upsert_bridge_quote(request.provider_key, request.terminal_instance_id, value, now)
-            tick = Tick(
-                request.provider_key,
-                instrument,
-                source_time,
-                item.bid,
-                item.ask,
-                item.volume,
-            )
+            # Compatibility quote submissions enter the same single collector used by
+            # /ticks. Current bridge v1.15 uses /ticks only.
+            tick = Tick(request.provider_key, instrument, source_time, item.bid, item.ask, item.volume)
             if self._ingest_observation(request.terminal_instance_id, tick):
                 accepted += 1
         return accepted
@@ -235,22 +229,31 @@ class Mt5BridgeService:
             return True
 
     def candles(self, request: BridgeCandlesRequest) -> int:
+        """Import historical one-minute bars only.
+
+        Live minute candles are built exclusively from ticks. Historical MT5 bars are
+        sanitized with the same market-closure rule before storage: a trailing unchanged
+        run stays pending, a short run is retained, and a run longer than one hour is
+        discarded as a closed-market flatline.
+        """
         self.validate_identity(request.provider_key, request.terminal_instance_id)
         interval = request.interval.lower()
-        if interval not in self.ALLOWED_INTERVALS: raise ValueError(f"Unsupported MT5 interval '{request.interval}'")
-        values=[]
+        if interval not in self.ALLOWED_INTERVALS:
+            raise ValueError(f"Unsupported MT5 interval '{request.interval}'")
         instrument = self.symbols.resolve(
             request.provider_key, request.provider_symbol, request.canonical_instrument
         ).canonical_instrument
+        incoming: list[Candle] = []
         for item in request.candles:
             try:
-                values.append(Candle(
+                incoming.append(Candle(
                     request.provider_key, instrument, "1m", ensure_server_local(item.time_utc),
                     item.open, item.high, item.low, item.close,
                     item.tick_volume or 0, Decimal(item.tick_volume or 0), True,
                 ))
             except ValueError:
                 continue
+        values = self._sanitize_historical_minutes(incoming)
         written = self.store.upsert_candles(values)
         if values:
             from .aggregation import CANONICAL_DERIVED_TIMEFRAMES, CandleAggregator
@@ -258,6 +261,37 @@ class Mt5BridgeService:
             for timeframe in CANONICAL_DERIVED_TIMEFRAMES:
                 aggregator.aggregate(instrument, timeframe, request.provider_key)
         return written
+
+    @staticmethod
+    def _same_ohlc(left: Candle, right: Candle) -> bool:
+        return (left.open, left.high, left.low, left.close) == (right.open, right.high, right.low, right.close)
+
+    def _sanitize_historical_minutes(self, incoming: list[Candle]) -> list[Candle]:
+        values = sorted(incoming, key=lambda item: item.open_time)
+        if not values:
+            return []
+        accepted: list[Candle] = []
+        pending: list[Candle] = []
+        previous = self.store.read_candles(
+            values[0].instrument, "1m", limit=1, provider=values[0].provider,
+            to_utc=values[0].open_time.replace(microsecond=0)
+        )
+        last = previous[-1] if previous and previous[-1].open_time < values[0].open_time else None
+        for candle in values:
+            if last is not None and self._same_ohlc(candle, last):
+                pending.append(candle)
+                continue
+            if pending:
+                elapsed = candle.open_time - last.open_time if last is not None else None
+                if elapsed is not None and elapsed <= timedelta(minutes=60):
+                    accepted.extend(pending)
+                    last = pending[-1]
+                pending.clear()
+            accepted.append(candle)
+            last = candle
+        # Deliberately do not persist a trailing unchanged run. It remains unconfirmed
+        # until a later changed bar proves whether the interval was short or closed.
+        return accepted
 
     def _consume(self) -> None:
         while True:
@@ -274,9 +308,22 @@ class Mt5BridgeService:
                         # Candle boundaries must use the MT5 source timestamp, never HTTP
                         # receipt time or local server processing time.
                         received_time = item.received_utc or server_now()
+                        tick_time = self._normalize_live_timestamp(item.time_utc, received_time)
+                        self.store.upsert_bridge_quote(
+                            request.provider_key, request.terminal_instance_id,
+                            {
+                                "provider_symbol": item.provider_symbol,
+                                "canonical_instrument": instrument,
+                                "time_utc": tick_time,
+                                "bid": item.bid,
+                                "ask": item.ask,
+                                "last": item.last,
+                                "volume": item.volume,
+                            },
+                            ensure_server_local(received_time),
+                        )
                         ticks.append(Tick(
-                            request.provider_key, instrument,
-                            self._normalize_live_timestamp(item.time_utc, received_time),
+                            request.provider_key, instrument, tick_time,
                             item.bid, item.ask, item.volume,
                         ))
                     except ValueError:

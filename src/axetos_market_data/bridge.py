@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+from threading import RLock
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -120,6 +121,9 @@ class Mt5BridgeService:
         self.symbols = SymbolResolver(store)
         self._queue: queue.Queue[BridgeTicksRequest | None] = queue.Queue(maxsize=max_queue_batches)
         self.stats = QueueStats()
+        self._services: dict[tuple[str, str], MarketDataService] = {}
+        self._last_ingested: dict[tuple[str, str], datetime] = {}
+        self._ingest_lock = RLock()
         self._thread = threading.Thread(target=self._consume, daemon=True, name="mt5-bridge-ingestion")
         self._thread.start()
 
@@ -160,18 +164,48 @@ class Mt5BridgeService:
         return len(request.ticks)
 
     def quotes(self, request: BridgeQuotesRequest) -> int:
+        """Persist provider-scoped quotes and use them as the live candle source.
+
+        MT5 bridge installations may submit quote snapshots without a separate tick batch.
+        In that mode the quote is still an authoritative market observation and must reach
+        the server candle builder. Duplicate or older observations are ignored per
+        provider/instrument so quote and tick endpoints can safely coexist.
+        """
         self.validate_identity(request.provider_key, request.terminal_instance_id)
         accepted = 0
         now = datetime.now(UTC)
         for item in request.quotes:
-            if item.bid <= 0 or item.ask < item.bid: continue
-            value = item.model_dump(by_alias=False)
-            value["canonical_instrument"] = self.symbols.resolve(
+            if item.bid <= 0 or item.ask < item.bid:
+                continue
+            instrument = self.symbols.resolve(
                 request.provider_key, item.provider_symbol, item.canonical_instrument
             ).canonical_instrument
+            value = item.model_dump(by_alias=False)
+            value["canonical_instrument"] = instrument
             self.store.upsert_bridge_quote(request.provider_key, request.terminal_instance_id, value, now)
-            accepted += 1
+            tick = Tick(
+                request.provider_key,
+                instrument,
+                item.time_utc,
+                item.bid,
+                item.ask,
+                item.volume,
+            )
+            if self._ingest_observation(request.terminal_instance_id, tick):
+                accepted += 1
         return accepted
+
+    def _ingest_observation(self, terminal_instance_id: str, tick: Tick) -> bool:
+        key = (tick.provider, tick.instrument)
+        service_key = (tick.provider, terminal_instance_id)
+        with self._ingest_lock:
+            previous = self._last_ingested.get(key)
+            if previous is not None and tick.timestamp <= previous:
+                return False
+            service = self._services.setdefault(service_key, MarketDataService(self.store))
+            service.run([tick])
+            self._last_ingested[key] = tick.timestamp
+            return True
 
     def candles(self, request: BridgeCandlesRequest) -> int:
         self.validate_identity(request.provider_key, request.terminal_instance_id)
@@ -188,28 +222,38 @@ class Mt5BridgeService:
         return self.store.upsert_candles(values)
 
     def _consume(self) -> None:
-        services: dict[tuple[str,str], MarketDataService] = {}
         while True:
-            request=self._queue.get()
-            if request is None: break
+            request = self._queue.get()
+            if request is None:
+                break
             try:
-                key=(request.provider_key, request.terminal_instance_id)
-                service=services.setdefault(key, MarketDataService(self.store))
-                ticks=[]
+                ticks = []
                 for item in request.ticks:
                     try:
                         instrument = self.symbols.resolve(
                             request.provider_key, item.provider_symbol, item.canonical_instrument
                         ).canonical_instrument
-                        ticks.append(Tick(request.provider_key, instrument, item.received_utc or datetime.now(UTC), item.bid, item.ask, item.volume))
-                    except ValueError: self.stats.rejected_ticks += 1
-                ticks.sort(key=lambda x:x.timestamp)
-                if ticks: service.run(ticks)
-                self.stats.processed_ticks += len(ticks); self.stats.last_batch_utc=datetime.now(UTC).isoformat(); self.stats.last_error=None
+                        # Candle boundaries must use the MT5 source timestamp, never HTTP
+                        # receipt time or local server processing time.
+                        ticks.append(Tick(
+                            request.provider_key, instrument, item.time_utc,
+                            item.bid, item.ask, item.volume,
+                        ))
+                    except ValueError:
+                        self.stats.rejected_ticks += 1
+                ticks.sort(key=lambda x: x.timestamp)
+                processed = 0
+                for tick in ticks:
+                    if self._ingest_observation(request.terminal_instance_id, tick):
+                        processed += 1
+                self.stats.processed_ticks += processed
+                self.stats.last_batch_utc = datetime.now(UTC).isoformat()
+                self.stats.last_error = None
             except Exception as exc:
-                self.stats.last_error=str(exc)
+                self.stats.last_error = str(exc)
             finally:
-                self._queue.task_done(); self.stats.queue_depth=self._queue.qsize()
+                self._queue.task_done()
+                self.stats.queue_depth = self._queue.qsize()
 
     def view(self) -> dict[str, object]:
         self.stats.queue_depth=self._queue.qsize()

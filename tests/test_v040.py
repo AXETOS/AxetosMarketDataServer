@@ -8,9 +8,9 @@ BRIDGE = ROOT / "bridges" / "mt5" / "Experts" / "AxetosMarketDataBridge.mq5"
 
 
 def test_release_metadata_is_v040() -> None:
-    assert __version__ == "0.46.0"
-    assert 'version = "0.46.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.46.0" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.47.0"
+    assert 'version = "0.47.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.47.0" in (ROOT / "README.md").read_text(encoding="utf-8")
 
 
 def test_mt5_bridge_source_is_distributed() -> None:

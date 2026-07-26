@@ -4,7 +4,7 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.46.0
+## Version 0.47.0
 
 Version 0.46.0 makes canonical read routing availability-aware. When the configured preferred provider has no candle rows for the requested instrument and timeframe, `/api/candles` falls back to the provider that actually owns the newest stored candle history. Quote reads follow the same rule: `/api/quotes/{instrument}` first respects canonical routing, then falls back to the newest available bridge quote when the preferred provider has no quote. Explicit `provider` requests remain strict and never fall back. This prevents instruments such as Bitcoin from appearing unavailable merely because a higher-priority configured provider does not supply that market.
 

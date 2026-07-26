@@ -837,6 +837,14 @@ class MarketDataStore:
         with self.connect() as c:
             c.execute("""INSERT INTO mt5_bridge_heartbeats VALUES(?,?,?,?,?,?,?) ON CONFLICT(provider_key,terminal_instance_id) DO UPDATE SET broker_name=excluded.broker_name,server_name=excluded.server_name,account_login=excluded.account_login,source_time_utc=excluded.source_time_utc,received_utc=excluded.received_utc""", (value['provider_key'],value['terminal_instance_id'],value.get('broker_name'),value.get('server_name'),value.get('account_login'),_iso(value['time_utc']),_iso(now)))
 
+    def latest_bridge_heartbeat(self, provider: str) -> dict[str, object] | None:
+        with self.connect() as c:
+            row = c.execute(
+                "SELECT * FROM mt5_bridge_heartbeats WHERE provider_key=? ORDER BY received_utc DESC LIMIT 1",
+                (provider,),
+            ).fetchone()
+        return None if row is None else dict(row)
+
     def upsert_bridge_instruments(self, provider: str, terminal: str, observed: datetime, rows: list[dict[str, object]]) -> None:
         with self.connect() as c:
             c.executemany("""INSERT INTO mt5_bridge_instruments VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider_key,terminal_instance_id,provider_symbol) DO UPDATE SET canonical_instrument=excluded.canonical_instrument,digits=excluded.digits,point=excluded.point,is_visible=excluded.is_visible,display_name=excluded.display_name,description=excluded.description,path=excluded.path,asset_class=excluded.asset_class,is_selected=excluded.is_selected,observed_utc=excluded.observed_utc""", [(provider,terminal,r['provider_symbol'],r['canonical_instrument'],r['digits'],str(r['point']),int(r['is_visible']),r.get('display_name'),r.get('description'),r.get('path'),r.get('asset_class'),int(r.get('is_selected',False)),_iso(observed)) for r in rows])

@@ -162,6 +162,25 @@ class ProviderWorker:
         service = MarketDataService(self.store)
         previous_states: dict[str, str] = {}
         try:
+            # MetaTrader5's Python IPC connection is process-global. Running two direct
+            # MT5 workers can therefore attach both workers to the same terminal. When an
+            # MQL bridge heartbeat exists, the bridge is the provider boundary and this
+            # worker must not open a competing direct terminal session.
+            heartbeat = self.store.latest_bridge_heartbeat(self.config.provider_key) if self.config.kind.lower() == "mt5" else None
+            if heartbeat is not None:
+                self.runtime.status = "Live"
+                self.runtime.terminal_running = True
+                self.runtime.terminal_connected = True
+                self.runtime.broker_connected = True
+                self.runtime.account_logged_in = heartbeat.get("account_login") is not None
+                self.runtime.account_login = heartbeat.get("account_login")
+                self.runtime.account_server = heartbeat.get("server_name")
+                self.events.record("info", "provider.bridge", "Provider is managed by the MT5 bridge", provider=self.config.provider_key)
+                while not self._stop.wait(1.0):
+                    current = self.store.latest_bridge_heartbeat(self.config.provider_key)
+                    if current is not None:
+                        self.runtime.last_heartbeat_utc = str(current.get("received_utc"))
+                return
             provider = self._provider()
             self._provider_instance = provider
             # stream() initializes/starts MT5 and authenticates before yielding its first tick.

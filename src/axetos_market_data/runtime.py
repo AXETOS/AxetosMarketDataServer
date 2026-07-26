@@ -12,6 +12,7 @@ from .feed import FeedStateEngine, FeedThresholds
 from .providers.mock import MockTickProvider
 from .providers.mt5 import MetaTrader5TickProvider
 from .service import MarketDataService
+from .domain import Candle
 from .routing import ProviderAuthorityRegistry
 from .maintenance import ProviderMaintenanceWorker
 from .storage import MarketDataStore
@@ -201,7 +202,7 @@ class ProviderWorker:
         self.runtime.status = "Starting"
         self.runtime.started_utc = datetime.now(UTC).isoformat()
         self.runtime.last_error = None
-        service = MarketDataService(self.store)
+        service: MarketDataService | None = None
         previous_states: dict[str, str] = {}
         try:
             # MetaTrader5's Python IPC connection is process-global. Running two direct
@@ -233,6 +234,32 @@ class ProviderWorker:
                 return
             provider = self._provider()
             self._provider_instance = provider
+
+            def verify_gap(provider_key: str, instrument: str, start: datetime, end: datetime):
+                symbol = self._provider_symbol(instrument)
+                if symbol is None:
+                    return []
+                fetch = getattr(provider, "fetch_candles_live", None) or getattr(provider, "fetch_candles", None)
+                if fetch is None:
+                    return []
+                try:
+                    values = fetch(symbol, "1m", start, end)
+                except Exception as exc:
+                    self.events.record(
+                        "warning", "gap.verify", "Provider gap verification failed",
+                        provider=provider_key, instrument=instrument,
+                        details={"error": str(exc), "from": start.isoformat(), "to": end.isoformat()},
+                    )
+                    return []
+                return [
+                    Candle(
+                        provider_key, instrument, "1m", item.open_time, item.open, item.high,
+                        item.low, item.close, item.tick_count, item.volume, True,
+                    )
+                    for item in values
+                ]
+
+            service = MarketDataService(self.store, gap_verifier=verify_gap)
             # stream() initializes/starts MT5 and authenticates before yielding its first tick.
             self.runtime.status = "Live"
             self.events.record("info", "provider.recovery", "Provider is live", provider=self.config.provider_key, details={"kind": self.config.kind})
@@ -267,7 +294,8 @@ class ProviderWorker:
                 self.runtime.last_heartbeat_utc = now
                 self.runtime.last_tick_utc = tick.timestamp.isoformat()
                 self.runtime.ticks_received += 1
-            service.builder.flush(complete=False)
+            if service is not None:
+                service.builder.flush(complete=False)
         except Exception as exc:
             self.runtime.status = "Failed"
             self.runtime.last_error = str(exc)

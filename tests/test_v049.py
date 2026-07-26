@@ -27,7 +27,8 @@ def test_connected_minute_uses_previous_close_but_gap_detaches(tmp_path):
     assert rows[-1].open == rows[-2].close
     builder.ingest(Tick("P", "EUR/USD", base + timedelta(minutes=3), Decimal("1.50"), Decimal("1.60")))
     rows = store.read_candles("EUR/USD", "1m", provider="P")
-    assert rows[-1].open == Decimal("1.55")
+    assert rows[-1].open == rows[-2].close
+    assert any(item.open_time == rows[-2].open_time + timedelta(minutes=1) for item in rows)
 
 
 def test_week_and_month_are_built_from_hour_candles(tmp_path):

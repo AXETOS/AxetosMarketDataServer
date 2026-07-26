@@ -531,6 +531,14 @@ class MarketDataStore:
             ).fetchone()
         return None if row is None else str(row["provider"])
 
+    def delete_candle(self, provider: str, instrument: str, timeframe: str, open_time: datetime) -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM candles WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc=?",
+                (provider, instrument, timeframe, _iso(open_time)),
+            )
+        return cursor.rowcount > 0
+
     def read_candles(
         self,
         instrument: str,

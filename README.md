@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.49.0
+## Version 0.50.0
 
-Version 0.49.0 fixes live MT5 candle visibility for clients. Live bridge quote and tick timestamps are normalized to server receipt UTC when the bridge timestamp differs by more than five minutes, preventing broker-local timestamps mislabeled as UTC from placing current candles outside client query windows. A query-based `GET /api/quote?instrument=...` endpoint is also available so canonical symbols containing `/` do not depend on path encoding. Historical backfill timestamps remain unchanged.
+Version 0.50.0 restores closed-market flatline suppression. A one-minute candle whose complete OHLC exactly matches the previous persisted candle remains pending and is not stored. When price movement resumes, the server checks stored/provider history for the missing interval before classifying the gap. Missing minutes in gaps of at most 60 minutes are flat-filled only after that verification; longer gaps are preserved as market closures unless authoritative provider history supplies candles. Higher timeframes continue to derive exclusively from accepted one-minute candles.
 
 ## Version 0.47.1
 
@@ -592,7 +592,7 @@ Automatic guesses are intentionally disabled until reviewed. This prevents ambig
 - Keeps compatibility read endpoints for older Trading Platform clients while `/api/candles` remains authoritative.
 - Candle and quote responses identify the active provider and never require client-side candle generation.
 
-## v0.49.0 candle authority model
+## v0.50.0 candle authority model
 
 The server now uses one deterministic candle pipeline. Live MT5 observations are stamped with the market-data server's configured local wall clock, persisted as ticks, and used to maintain the authoritative one-minute OHLC candle. The client never constructs OHLC data.
 

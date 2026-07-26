@@ -395,12 +395,14 @@ def create_app(
         provider_key: str = Query(alias="providerKey"),
         terminal_instance_id: str = Query(alias="terminalInstanceId"),
     ) -> str:
-        items = store.list_bridge_instruments(provider_key, terminal_instance_id)
-        return ",".join(
-            str(item["provider_symbol"])
-            for item in items
-            if bool(item.get("is_selected"))
-        )
+        # The Market Data Server is the sole subscription authority. The bridge's
+        # discovered/Market Watch selection is diagnostic only and must never decide
+        # which instruments are streamed. Return the exact provider configuration.
+        _ = terminal_instance_id
+        worker = supervisor.get(provider_key)
+        if worker is None or worker.config.kind.lower() != "mt5" or not worker.config.enabled:
+            return ""
+        return ",".join(worker.config.normalized_symbols())
 
     @app.get("/api/market-data/mt5/repair-request.txt", response_class=PlainTextResponse)
     def bridge_repair_request(

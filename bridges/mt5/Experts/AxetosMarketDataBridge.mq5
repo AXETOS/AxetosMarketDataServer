@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.12"
+#property version   "1.13"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -89,7 +89,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.12: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.13: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -804,7 +804,17 @@ void RefreshServerSelection()
    g_last_selection_refresh = TimeCurrent();
    if(response == "")
    {
-      Print("Axetos MT5 Bridge: server selection is empty; retaining the current stream to avoid an accidental outage.");
+      // Empty means the server has intentionally selected no symbols. Stop all
+      // streaming rather than retaining stale bridge-local subscriptions.
+      for(int i = 0; i < ArraySize(g_symbols); i++)
+         SymbolSelect(g_symbols[i], false);
+      ArrayResize(g_symbols, 0);
+      ArrayResize(g_last_m1_bar, 0);
+      g_backfill_symbol_index = 0;
+      g_backfill_interval_index = 0;
+      ResetBackfillProgress();
+      g_backfill_enabled = false;
+      Print("Axetos MT5 Bridge: server selection is empty; streaming stopped.");
       return;
    }
 
@@ -837,6 +847,22 @@ void RefreshServerSelection()
    string new_key = JoinedSymbols(resolved);
    if(old_key == new_key)
       return;
+
+   // Deselect anything the server removed before applying the exact new set.
+   for(int i = 0; i < ArraySize(g_symbols); i++)
+   {
+      bool keep = false;
+      for(int j = 0; j < accepted; j++)
+      {
+         if(g_symbols[i] == resolved[j])
+         {
+            keep = true;
+            break;
+         }
+      }
+      if(!keep)
+         SymbolSelect(g_symbols[i], false);
+   }
 
    ArrayResize(g_symbols, accepted);
    ArrayResize(g_last_m1_bar, accepted);

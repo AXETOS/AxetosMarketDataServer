@@ -21,11 +21,18 @@ class CandleAggregator:
     def __init__(self, store: MarketDataStore) -> None:
         self._store = store
 
-    def aggregate(self, instrument: str, target_timeframe: str, provider: str) -> int:
+    def aggregate(
+        self, instrument: str, target_timeframe: str, provider: str, *, replace: bool = True
+    ) -> int:
         if target_timeframe == "1m":
             raise ValueError("target timeframe must be larger than 1m")
         source_timeframe = _SOURCE_TIMEFRAME[target_timeframe]
         source = self._store.read_candles(instrument, source_timeframe, limit=100_000, provider=provider)
+        if replace:
+            # Rebuild means replace. Leaving old target buckets behind after source
+            # cleanup creates disconnected chart fragments and mixes old pipeline data
+            # with the new authoritative series.
+            self._store.delete_candles(provider, instrument, target_timeframe)
         groups: dict[object, list[Candle]] = defaultdict(list)
         for candle in source:
             groups[bucket_start(candle.open_time, target_timeframe)].append(candle)

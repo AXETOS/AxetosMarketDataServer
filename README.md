@@ -4,7 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.55.0
+## Version 0.56.0
+
+Version 0.56.0 adds a destructive authoritative history rebuild for each MT5 provider. The rebuild deletes all old candle timeframes for each configured instrument, downloads fresh provider `1m` history, removes unresolved trailing flat runs and closed-market flatline runs longer than 60 minutes, then regenerates every higher timeframe from the cleaned minute series. Derived aggregation now replaces old target buckets instead of leaving disconnected chart fragments behind. Use **Rebuild clean 7d** on a provider after upgrading when the database contains candles produced by older pipelines.
 
 
 Version 0.55.0 pins each live quote stream to the server-selected canonical provider. The quote endpoint falls back only when that provider has no fresh quote, preventing rapid broker switching and artificial bid/ask spread spikes in consuming clients.

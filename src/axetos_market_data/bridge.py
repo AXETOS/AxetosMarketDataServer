@@ -263,8 +263,15 @@ class Mt5BridgeService:
         return written
 
     @staticmethod
-    def _same_ohlc(left: Candle, right: Candle) -> bool:
-        return (left.open, left.high, left.low, left.close) == (right.open, right.high, right.low, right.close)
+    def _is_flat_at_previous_close(candidate: Candle, previous: Candle) -> bool:
+        identical_ohlc = (
+            candidate.open, candidate.high, candidate.low, candidate.close
+        ) == (previous.open, previous.high, previous.low, previous.close)
+        flat_at_close = (
+            candidate.open == candidate.high == candidate.low == candidate.close
+            == previous.close
+        )
+        return identical_ohlc or flat_at_close
 
     def _sanitize_historical_minutes(self, incoming: list[Candle]) -> list[Candle]:
         values = sorted(incoming, key=lambda item: item.open_time)
@@ -278,7 +285,7 @@ class Mt5BridgeService:
         )
         last = previous[-1] if previous and previous[-1].open_time < values[0].open_time else None
         for candle in values:
-            if last is not None and self._same_ohlc(candle, last):
+            if last is not None and self._is_flat_at_previous_close(candle, last):
                 pending.append(candle)
                 continue
             if pending:

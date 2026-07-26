@@ -10,6 +10,7 @@ from .calendar import MarketCalendar
 from .storage import MarketDataStore
 from .operational import OperationalEventService
 from .timeframes import bucket_start
+from .aggregation import CANONICAL_DERIVED_TIMEFRAMES, CandleAggregator
 
 
 _TIMEFRAME_SECONDS = {
@@ -52,6 +53,114 @@ class GapRepairResult:
     invalid_candles: int
     gaps_resolved: int
     gaps_remaining: int
+
+
+
+
+@dataclass(slots=True)
+class HistoryRebuildResult:
+    provider: str
+    instrument: str
+    requested_from_utc: str
+    requested_to_utc: str
+    received_minutes: int
+    accepted_minutes: int
+    discarded_flat_minutes: int
+    deleted_candles: int
+    derived_candles: int
+
+
+class AuthoritativeHistoryRebuildService:
+    """Destructively rebuild one instrument from one provider's authoritative M1 history."""
+
+    def __init__(self, store: MarketDataStore, short_flat_minutes: int = 60) -> None:
+        self.store = store
+        self.short_flat_minutes = short_flat_minutes
+        self.events = OperationalEventService(store)
+
+    def run(
+        self,
+        provider: HistoricalCandleProvider,
+        provider_key: str,
+        symbol: str,
+        instrument: str,
+        start: datetime,
+        end: datetime,
+    ) -> HistoryRebuildResult:
+        start, end = start.astimezone(UTC), end.astimezone(UTC)
+        fetched = provider.fetch_candles(symbol, "1m", start, end)
+        normalized, invalid = HistoricalBackfillService._normalize(
+            fetched, provider_key, instrument, "1m"
+        )
+        accepted = self._sanitize(normalized)
+        discarded = len(normalized) - len(accepted)
+
+        # Remove every old candle for this provider/instrument. Derived candles outside
+        # the requested window can otherwise survive and appear as disconnected chart
+        # islands after a clean rebuild.
+        deleted = self.store.delete_candles(provider_key, instrument)
+        self.store.clear_gaps(provider_key, instrument, "1m", start, end)
+        self.store.upsert_candles(accepted)
+
+        aggregator = CandleAggregator(self.store)
+        derived = 0
+        for timeframe in CANONICAL_DERIVED_TIMEFRAMES:
+            derived += aggregator.aggregate(instrument, timeframe, provider_key, replace=True)
+
+        self.store.set_ingestion_state(
+            provider_key, instrument, "1m", start, end, len(fetched), len(accepted),
+            invalid + discarded, "Rebuilt", None,
+        )
+        result = HistoryRebuildResult(
+            provider_key, instrument, start.isoformat(), end.isoformat(), len(fetched),
+            len(accepted), discarded, deleted, derived,
+        )
+        self.events.record(
+            "info", "history.rebuilt", "Authoritative instrument history rebuilt",
+            provider=provider_key, instrument=instrument,
+            details={name: getattr(result, name) for name in result.__slots__},
+        )
+        return result
+
+    def _sanitize(self, candles: list[Candle]) -> list[Candle]:
+        values = sorted(candles, key=lambda item: item.open_time)
+        if not values:
+            return []
+        accepted: list[Candle] = []
+        pending: list[Candle] = []
+        last: Candle | None = None
+        for candle in values:
+            # Exact duplicate timestamps are replaced deterministically by the newest
+            # provider row before continuity/flat-run analysis.
+            if accepted and candle.open_time == accepted[-1].open_time:
+                accepted[-1] = candle
+                last = candle
+                continue
+            if last is not None and self._is_flat_at_previous_close(candle, last):
+                pending.append(candle)
+                continue
+            if pending:
+                elapsed_minutes = int((candle.open_time - last.open_time).total_seconds() // 60)
+                if elapsed_minutes <= self.short_flat_minutes:
+                    accepted.extend(pending)
+                    last = pending[-1]
+                pending.clear()
+            accepted.append(candle)
+            last = candle
+        # A trailing unchanged run is unresolved. It is omitted until a later changed
+        # provider bar proves that it was a short interruption rather than closure.
+        return accepted
+
+    @staticmethod
+    def _is_flat_at_previous_close(candidate: Candle, previous: Candle) -> bool:
+        identical_ohlc = (
+            candidate.open, candidate.high, candidate.low, candidate.close
+        ) == (previous.open, previous.high, previous.low, previous.close)
+        flat_at_close = (
+            candidate.open == candidate.high == candidate.low == candidate.close
+            == previous.close
+        )
+        return identical_ohlc or flat_at_close
 
 
 class HistoricalBackfillService:

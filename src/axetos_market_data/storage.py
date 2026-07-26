@@ -539,6 +539,31 @@ class MarketDataStore:
             )
         return cursor.rowcount > 0
 
+    def delete_candles(
+        self,
+        provider: str,
+        instrument: str,
+        timeframe: str | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> int:
+        where = ["provider=?", "instrument=?"]
+        parameters: list[object] = [provider, instrument]
+        if timeframe is not None:
+            where.append("timeframe=?")
+            parameters.append(timeframe)
+        if start is not None:
+            where.append("open_time_utc>=?")
+            parameters.append(_iso(start))
+        if end is not None:
+            where.append("open_time_utc<?")
+            parameters.append(_iso(end))
+        with self.connect() as connection:
+            cursor = connection.execute(
+                f"DELETE FROM candles WHERE {' AND '.join(where)}", parameters
+            )
+        return int(cursor.rowcount)
+
     def read_candles(
         self,
         instrument: str,

@@ -8,9 +8,9 @@ from axetos_market_data.storage import MarketDataStore
 
 
 def test_release_metadata_and_readme():
-    assert __version__ == "0.56.0"
+    assert __version__ == "0.57.0"
     readme = Path("README.md").read_text(encoding="utf-8")
-    assert "## Version 0.56.0" in readme
+    assert "## Version 0.57.0" in readme
     assert "configured, MT5-selected, monitored, and stored instruments" in readme
 
 
@@ -49,4 +49,4 @@ def test_management_ui_distinguishes_instrument_counts():
     source = Path("src/axetos_market_data/web.py").read_text(encoding="utf-8")
     for label in ("Configured instruments", "Selected instruments", "Monitored feeds", "Stored instruments"):
         assert label in source
-    assert "Configured / selected / failed" in source
+    assert "Configured / selected / failed" not in source

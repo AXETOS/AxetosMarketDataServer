@@ -6,6 +6,7 @@ import json
 import logging
 import asyncio
 import os
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -37,6 +38,7 @@ from .streaming import LiveStreamHub, StreamFilter
 from .backups import BackupError, BackupService
 from .benchmark_jobs import BenchmarkJobManager
 from .bridge import (Mt5BridgeService, BridgeHeartbeatRequest, BridgeInstrumentsRequest, BridgeTicksRequest, BridgeQuotesRequest, BridgeCandlesRequest, InstrumentSelectionRequest)
+from .full_history import FullHistoryBackfillManager
 
 
 class BackfillRequest(BaseModel):
@@ -184,6 +186,18 @@ def create_app(
     scheduler = MaintenanceScheduler(store)
     backups = BackupService(database_path, configuration_path)
     benchmark_jobs = BenchmarkJobManager()
+    def rebuild_full_history_derived(provider: str, instrument: str) -> None:
+        from .aggregation import CANONICAL_DERIVED_TIMEFRAMES, CandleAggregator
+        def run() -> None:
+            aggregator = CandleAggregator(store)
+            for timeframe in CANONICAL_DERIVED_TIMEFRAMES:
+                aggregator.aggregate(instrument, timeframe, provider)
+        threading.Thread(target=run, name=f"history-aggregate-{provider}-{instrument}", daemon=True).start()
+
+    full_history = FullHistoryBackfillManager(
+        lambda provider, instrument: store.earliest_candle_time(provider, instrument, "1m"),
+        on_instrument_completed=rebuild_full_history_derived,
+    )
     started_utc = datetime.now(UTC)
 
     @asynccontextmanager
@@ -209,6 +223,7 @@ def create_app(
     app.state.supervisor = supervisor
     app.state.secret_store = secret_store
     app.state.benchmark_jobs = benchmark_jobs
+    app.state.full_history = full_history
 
     @app.get("/api/alerts/status")
     def alert_status() -> dict[str, object]:
@@ -416,11 +431,8 @@ def create_app(
         provider_key: str = Query(alias="providerKey"),
         terminal_instance_id: str = Query(alias="terminalInstanceId"),
     ) -> str:
-        # No bounded repair is pending. Keeping this compatibility endpoint available
-        # prevents older/current EAs from treating an optional control-plane poll as
-        # a transport outage. A persistent repair queue can populate this contract later.
-        _ = (provider_key, terminal_instance_id)
-        return ""
+        _ = terminal_instance_id
+        return full_history.next_request(provider_key)
 
     @app.post("/api/market-data/mt5/repair-result")
     def bridge_repair_result(
@@ -430,16 +442,44 @@ def create_app(
         interval: str = Query(),
         completed: bool = Query(),
         request_id: str = Query(alias="requestId"),
+        bars_received: int = Query(default=0, alias="barsReceived"),
+        bars_inserted: int = Query(default=0, alias="barsInserted"),
     ) -> dict[str, object]:
-        return {
-            "accepted": True,
-            "providerKey": provider_key,
-            "terminalInstanceId": terminal_instance_id,
-            "providerSymbol": provider_symbol,
-            "interval": interval,
-            "completed": completed,
-            "requestId": request_id,
-        }
+        _ = (terminal_instance_id, provider_symbol, interval)
+        full_history.batch_result(provider_key, request_id, bars_received, bars_inserted, completed)
+        return {"accepted": True, "requestId": request_id}
+
+    @app.post("/api/market-data/mt5/history-availability")
+    def bridge_history_availability(
+        provider_key: str = Query(alias="providerKey"),
+        request_id: str = Query(alias="requestId"),
+        earliest_utc: datetime | None = Query(default=None, alias="earliestUtc"),
+    ) -> dict[str, object]:
+        full_history.availability_result(provider_key, request_id, earliest_utc)
+        return {"accepted": True, "requestId": request_id}
+
+    @app.post("/api/full-history/{provider_key}")
+    def start_full_history(provider_key: str) -> dict[str, object]:
+        worker = supervisor.get(provider_key)
+        if worker is None:
+            raise HTTPException(404, "Provider not found")
+        if worker.config.kind.lower() != "mt5":
+            raise HTTPException(400, "Full-history backfill requires an MT5 provider")
+        resolver = SymbolResolver(store)
+        symbols = []
+        for provider_symbol in worker.config.normalized_symbols():
+            resolved = resolver.resolve(provider_key, provider_symbol)
+            symbols.append((provider_symbol, normalize_instrument(resolved.canonical_instrument)))
+        try:
+            result = full_history.start(provider_key, symbols)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        events.record("info", "backfill.full_started", "Full-history background backfill started", provider=provider_key, details={"instruments": len(symbols)})
+        return result
+
+    @app.get("/api/full-history")
+    def full_history_status(provider_key: str | None = None) -> dict[str, object]:
+        return full_history.status(provider_key)
 
     @app.post("/api/market-data/mt5/instrument-selection")
     def instrument_selection(request: InstrumentSelectionRequest) -> dict[str, object]:
@@ -1141,7 +1181,7 @@ CONTROL_CENTER_HTML = r'''<!doctype html><html lang="en"><head><meta charset="ut
 <dialog id="benchmarkEditor" class="benchmark-dialog"><div class="top"><div><h2 style="margin:0">Performance benchmark</h2><div class="muted">Administrator diagnostics for synthetic ingestion throughput.</div></div><button class="secondary" onclick="benchmarkEditor.close()">Close</button></div><div class="benchmark-warning">Benchmarking creates heavy synthetic database load and can affect live ingestion. Run it only on a development or maintenance instance.</div><form id="benchmarkForm"><label>Ticks<input name="ticks" type="number" min="1000" max="10000000" value="100000"></label><label>Instruments<input name="instruments" type="number" min="1" max="10000" value="10"></label><label class="wide">Batch sizes, comma separated<input name="batch_sizes" value="1000,5000,10000"><small class="muted">Use one value for a single run or several values to compare them.</small></label><div class="actions wide"><button type="submit">Start benchmark</button></div></form><div id="benchmarkProgress" class="benchmark-progress">No benchmark has been started.</div><div id="benchmarkResults" class="benchmark-results" style="display:none"></div></dialog>
 <script>
 const root=document.getElementById('providers'),eventsRoot=document.getElementById('events'),eventPageLabel=document.getElementById('eventPage'),stats=document.getElementById('stats'),count=document.getElementById('count'),editor=document.getElementById('editor'),form=document.getElementById('form'),title=document.getElementById('title'),error=document.getElementById('error');let editing=null,editingSymbols=[];const esc=v=>String(v??'').replace(/[&<>\"]/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[x]));const apiError=(payload,fallback)=>{const detail=payload?.detail??payload?.message??fallback;if(Array.isArray(detail))return detail.map(item=>item?.msg||item?.message||JSON.stringify(item)).join('; ');if(detail&&typeof detail==='object')return detail.msg||detail.message||JSON.stringify(detail);return String(detail||fallback)};
-let eventPageNumber=1,eventPages=1,eventSearchTimer=null;async function load(){const [pr,sr,hr,mr,br,ar,fr]=await Promise.all([fetch('/api/providers'),fetch('/api/statistics'),fetch('/api/health'),fetch('/api/metrics'),fetch('/api/market-data/mt5/bridge/status'),fetch('/api/alerts/status'),fetch('/api/feed-status')]);const p=await pr.json(),s=await sr.json(),h=await hr.json(),m=await mr.json(),b=await br.json(),a=await ar.json(),f=await fr.json();const configuredInstruments=new Set(),selectedInstruments=new Set(),monitoredInstruments=new Set();for(const provider of p.providers){for(const symbol of (provider.symbols||[])){configuredInstruments.add(symbol.canonical_instrument);if(symbol.selected)selectedInstruments.add(symbol.canonical_instrument)}for(const feed of (provider.feeds||[]))monitoredInstruments.add(feed.instrument)}stats.innerHTML=[['Health',h.status],['Market feed',f.overall_state],['Connected providers',m.providers_live+'/'+m.providers_configured],['Configured instruments',configuredInstruments.size],['Selected instruments',selectedInstruments.size],['Monitored feeds',monitoredInstruments.size],['Stored instruments',s.instruments],['Ticks',s.ticks],['Candles',s.candles],['Database size',(m.database_size_bytes/1048576).toFixed(2)+' MB'],['Latest tick',s.latest_tick_utc?new Date(s.latest_tick_utc).toLocaleString():'-'],['Unresolved gaps',s.unresolved_gaps],['Quality issues',s.unresolved_quality_issues],['MT5 bridge terminals',b.heartbeats.length],['Alerts',a.enabled?'Configured':'Disabled'],['Bridge instruments',b.discovered_instruments],['Bridge queue',b.queue.queue_depth]].map(x=>`<div class="card"><div class="label">${x[0]}</div><div class="value">${x[1]}</div></div>`).join('');count.textContent=`${p.providers.length} configured`;root.innerHTML=p.providers.length?'':'<div class="card">No providers configured.</div>';for(const x of p.providers){const c=x.configuration,r=x.runtime,feeds=Array.isArray(x.feeds)?x.feeds:[],e=document.createElement('article');e.className='card';const feedRows=feeds.length?feeds.map(feed=>`<div><span class="label">${esc(feed.instrument)} feed</span><br><span class="feed-state feed-${String(feed.feed_state).toLowerCase()}">${esc(feed.feed_state)}</span> · ${Math.round(feed.unchanged_seconds)}s unchanged</div>`).join(''):'<div><span class="label">Market feed</span><br><span class="feed-state feed-inactive">INACTIVE</span></div>';const symbolRows=(x.symbols||[]).map(symbol=>`${esc(symbol.provider_symbol)} → ${esc(symbol.canonical_instrument)} <span class="symbol-state ${esc(symbol.selection_state)}">${esc(symbol.selection_state)}</span>${symbol.error?` <span class="error">${esc(symbol.error)}</span>`:''}`).join('<br>');e.innerHTML=`<div class="top"><div><div class="name">${esc(c.display_name)}</div><div class="key">${esc(c.provider_key)} · ${esc(c.kind)}</div></div><span class="status ${String(r.status==='Live'?'Connected':r.status).toLowerCase()}">${esc(r.status==='Live'?'Connected':r.status)}</span></div><div class="rows"><div><span class="label">Configured / selected / failed</span><br>${x.configured_instruments||0} / ${x.selected_instruments||0} / ${x.failed_instruments||0}<br>${symbolRows||'-'}</div><div><span class="label">MT5 terminal / broker</span><br>${c.kind==='mt5'?(r.status==='Failed'?`FAILED / DISCONNECTED`:`${r.terminal_running?'RUNNING':'STOPPED'} / ${r.broker_connected?'CONNECTED':'DISCONNECTED'}`):'-'}</div><div><span class="label">MT5 account</span><br>${c.kind==='mt5'?(r.account_logged_in?`${esc(r.account_login||'')} · ${esc(r.account_server||'')}`:'NOT LOGGED IN'):'-'}</div><div><span class="label">Provider observations</span><br>${r.ticks_received}</div><div><span class="label">Accepted / unchanged</span><br>${r.accepted_market_ticks||0} / ${r.ignored_unchanged_updates||0}</div><div><span class="label">Last observation</span><br>${r.last_tick_utc?new Date(r.last_tick_utc).toLocaleString():'-'}</div><div><span class="label">Auto-start</span><br>${c.auto_start?'Yes':'No'}</div><div><span class="label">Priority / fallback</span><br>${c.priority} / ${c.fallback_after_seconds}s</div><div><span class="label">Authoritative / standby observations</span><br>${r.authoritative_ticks} / ${r.standby_ticks}</div><div><span class="label">Recovery attempts / candles</span><br>${r.recovery_attempts||0} / ${r.recovery_candles_written||0}</div>${feedRows}<div><span class="label">Maintenance</span><br>${x.maintenance?`${esc(x.maintenance.status)} · next ${x.maintenance.next_run_utc?new Date(x.maintenance.next_run_utc).toLocaleString():'-'}`:'Disabled'}</div></div><div class="actions"><button onclick="editProvider('${esc(c.provider_key)}')">Edit</button>${c.kind==='mt5'?`<button onclick="manageSymbols('${esc(c.provider_key)}')">Manage symbols</button>`:''}<button onclick="act('${esc(c.provider_key)}','start')">Start</button><button class="secondary" onclick="act('${esc(c.provider_key)}','stop')">Stop</button><button onclick="act('${esc(c.provider_key)}','restart')">Restart</button><button class="secondary" onclick="testProvider('${esc(c.provider_key)}')">Test connection</button>${c.kind==='mt5'?`<button class="secondary" onclick="backfill('${esc(c.provider_key)}','${esc((c.symbols||[])[0]||'')}')">Backfill 7d</button><button class="danger" onclick="rebuildHistory('${esc(c.provider_key)}')">Rebuild clean 7d</button><button class="secondary" onclick="repairGaps('${esc(c.provider_key)}')">Repair gaps</button>${c.maintenance_enabled?`<button class="secondary" onclick="act('${esc(c.provider_key)}','maintenance')">Run maintenance</button>`:''}`:''}<button class="danger" onclick="removeProvider('${esc(c.provider_key)}')">Remove</button></div>${r.last_error?`<div class="error">${esc(r.last_error)}</div>`:''}`;root.appendChild(e)}}
+let eventPageNumber=1,eventPages=1,eventSearchTimer=null;async function load(){const [pr,sr,hr,mr,br,ar,fr]=await Promise.all([fetch('/api/providers'),fetch('/api/statistics'),fetch('/api/health'),fetch('/api/metrics'),fetch('/api/market-data/mt5/bridge/status'),fetch('/api/alerts/status'),fetch('/api/feed-status')]);const p=await pr.json(),s=await sr.json(),h=await hr.json(),m=await mr.json(),b=await br.json(),a=await ar.json(),f=await fr.json();const configuredInstruments=new Set(),selectedInstruments=new Set(),monitoredInstruments=new Set();for(const provider of p.providers){for(const symbol of (provider.symbols||[])){configuredInstruments.add(symbol.canonical_instrument);if(symbol.selected)selectedInstruments.add(symbol.canonical_instrument)}for(const feed of (provider.feeds||[]))monitoredInstruments.add(feed.instrument)}stats.innerHTML=[['Health',h.status],['Market feed',f.overall_state],['Connected providers',m.providers_live+'/'+m.providers_configured],['Configured instruments',configuredInstruments.size],['Selected instruments',selectedInstruments.size],['Monitored feeds',monitoredInstruments.size],['Stored instruments',s.instruments],['Ticks',s.ticks],['Candles',s.candles],['Database size',(m.database_size_bytes/1048576).toFixed(2)+' MB'],['Latest tick',s.latest_tick_utc?new Date(s.latest_tick_utc).toLocaleString():'-'],['Unresolved gaps',s.unresolved_gaps],['Quality issues',s.unresolved_quality_issues],['MT5 bridge terminals',b.heartbeats.length],['Alerts',a.enabled?'Configured':'Disabled'],['Bridge instruments',b.discovered_instruments],['Bridge queue',b.queue.queue_depth]].map(x=>`<div class="card"><div class="label">${x[0]}</div><div class="value">${x[1]}</div></div>`).join('');count.textContent=`${p.providers.length} configured`;root.innerHTML=p.providers.length?'':'<div class="card">No providers configured.</div>';for(const x of p.providers){const c=x.configuration,r=x.runtime,feeds=Array.isArray(x.feeds)?x.feeds:[],e=document.createElement('article');e.className='card';const feedRows=feeds.length?feeds.map(feed=>`<div><span class="label">${esc(feed.instrument)} feed</span><br><span class="feed-state feed-${String(feed.feed_state).toLowerCase()}">${esc(feed.feed_state)}</span> · ${Math.round(feed.unchanged_seconds)}s unchanged</div>`).join(''):'<div><span class="label">Market feed</span><br><span class="feed-state feed-inactive">INACTIVE</span></div>';e.innerHTML=`<div class="top"><div><div class="name">${esc(c.display_name)}</div><div class="key">${esc(c.provider_key)} · ${esc(c.kind)}</div></div><span class="status ${String(r.status==='Live'?'Connected':r.status).toLowerCase()}">${esc(r.status==='Live'?'Connected':r.status)}</span></div><div class="rows"><div><span class="label">MT5 terminal / broker</span><br>${c.kind==='mt5'?(r.status==='Failed'?`FAILED / DISCONNECTED`:`${r.terminal_running?'RUNNING':'STOPPED'} / ${r.broker_connected?'CONNECTED':'DISCONNECTED'}`):'-'}</div><div><span class="label">MT5 account</span><br>${c.kind==='mt5'?(r.account_logged_in?`${esc(r.account_login||'')} · ${esc(r.account_server||'')}`:'NOT LOGGED IN'):'-'}</div><div><span class="label">Provider observations</span><br>${r.ticks_received}</div><div><span class="label">Accepted / unchanged</span><br>${r.accepted_market_ticks||0} / ${r.ignored_unchanged_updates||0}</div><div><span class="label">Last observation</span><br>${r.last_tick_utc?new Date(r.last_tick_utc).toLocaleString():'-'}</div><div><span class="label">Auto-start</span><br>${c.auto_start?'Yes':'No'}</div><div><span class="label">Priority / fallback</span><br>${c.priority} / ${c.fallback_after_seconds}s</div><div><span class="label">Authoritative / standby observations</span><br>${r.authoritative_ticks} / ${r.standby_ticks}</div><div><span class="label">Recovery attempts / candles</span><br>${r.recovery_attempts||0} / ${r.recovery_candles_written||0}</div>${feedRows}<div><span class="label">Maintenance</span><br>${x.maintenance?`${esc(x.maintenance.status)} · next ${x.maintenance.next_run_utc?new Date(x.maintenance.next_run_utc).toLocaleString():'-'}`:'Disabled'}</div></div><div class="actions"><button onclick="editProvider('${esc(c.provider_key)}')">Edit</button>${c.kind==='mt5'?`<button onclick="manageSymbols('${esc(c.provider_key)}')">Manage symbols</button>`:''}<button onclick="act('${esc(c.provider_key)}','start')">Start</button><button class="secondary" onclick="act('${esc(c.provider_key)}','stop')">Stop</button><button onclick="act('${esc(c.provider_key)}','restart')">Restart</button><button class="secondary" onclick="testProvider('${esc(c.provider_key)}')">Test connection</button>${c.kind==='mt5'?`<button class="secondary" onclick="fullHistory('${esc(c.provider_key)}')">Backfill full history</button><button class="danger" onclick="rebuildHistory('${esc(c.provider_key)}')">Rebuild clean 7d</button><button class="secondary" onclick="repairGaps('${esc(c.provider_key)}')">Repair gaps</button>${c.maintenance_enabled?`<button class="secondary" onclick="act('${esc(c.provider_key)}','maintenance')">Run maintenance</button>`:''}`:''}<button class="danger" onclick="removeProvider('${esc(c.provider_key)}')">Remove</button></div>${r.last_error?`<div class="error">${esc(r.last_error)}</div>`:''}`;root.appendChild(e)}}
 function updateProviderForm(){const isMt5=form.elements.kind.value==='mt5';symbolsField.style.display=isMt5?'none':'';if(!isMt5&&!form.elements.symbols.value.trim())form.elements.symbols.value='EUR/USD'}
 function openAdd(){editing=null;editingSymbols=[];title.textContent='Add provider';form.reset();form.elements.poll_interval_seconds.value=1;form.elements.symbols.value='EUR/USD';form.elements.priority.value=100;form.elements.fallback_after_seconds.value=10;form.elements.batch_window_seconds.value=5;form.elements.batch_limit.value=50000;form.elements.maintenance_interval_minutes.value=60;form.elements.maintenance_backfill_days.value=2;form.elements.feed_quiet_seconds.value=60;form.elements.feed_stalled_seconds.value=180;form.elements.feed_inactive_seconds.value=600;form.elements.maintenance_enabled.checked=false;form.elements.enabled.checked=true;form.elements.auto_start.checked=true;form.elements.provider_key.readOnly=false;error.textContent='';updateProviderForm();editor.showModal()}
 async function editProvider(key){const r=await fetch('/api/providers/'+encodeURIComponent(key)),x=await r.json(),c=x.configuration;editing=key;editingSymbols=Array.isArray(c.symbols)?c.symbols:[];title.textContent='Edit '+c.display_name;form.elements.provider_key.value=c.provider_key;form.elements.provider_key.readOnly=true;form.elements.display_name.value=c.display_name;form.elements.kind.value=c.kind;form.elements.poll_interval_seconds.value=c.poll_interval_seconds;form.elements.symbols.value=c.symbols.join(',');updateProviderForm();form.elements.terminal_path.value=c.terminal_path||'';form.elements.account_login.value=c.account_login||'';form.elements.account_server.value=c.account_server||'';form.elements.mt5_password.value=c.password_configured?'********':'';form.elements.priority.value=c.priority;form.elements.fallback_after_seconds.value=c.fallback_after_seconds;form.elements.batch_window_seconds.value=c.batch_window_seconds;form.elements.batch_limit.value=c.batch_limit;form.elements.maintenance_interval_minutes.value=c.maintenance_interval_minutes;form.elements.maintenance_backfill_days.value=c.maintenance_backfill_days;form.elements.feed_quiet_seconds.value=c.feed_quiet_seconds??60;form.elements.feed_stalled_seconds.value=c.feed_stalled_seconds??180;form.elements.feed_inactive_seconds.value=c.feed_inactive_seconds??600;form.elements.maintenance_enabled.checked=c.maintenance_enabled;form.elements.enabled.checked=c.enabled;form.elements.auto_start.checked=c.auto_start;editor.showModal()}
@@ -1151,6 +1191,7 @@ let symbolProvider=null;
 async function manageSymbols(key){symbolProvider=key;symbolTitle.textContent='Manage symbols · '+key;symbolSearch.value='';symbolEditor.showModal();await loadSymbols(false)}
 async function loadSymbols(refresh){if(!symbolProvider)return;symbolList.innerHTML='<div style="padding:16px">Loading…</div>';const q=new URLSearchParams({refresh:String(refresh),limit:'5000'});if(symbolSearch.value.trim())q.set('search',symbolSearch.value.trim());const r=await fetch('/api/providers/'+encodeURIComponent(symbolProvider)+'/symbols?'+q),x=await r.json();if(!r.ok){symbolList.innerHTML='<div class="error" style="padding:16px">'+esc(x.detail||'Could not load symbols')+'</div>';return}symbolSummary.textContent=`${x.count} symbols · ${x.duplicate_count||0} duplicate alternatives · automatic mappings remain disabled until reviewed`;symbolList.innerHTML=x.items.map((s,i)=>`<div class="symbol-row"><div class="symbol-info"><strong>${esc(s.provider_symbol)}</strong><small>${esc(s.description||'No broker description')}</small>${s.duplicate_of?`<span class="duplicate-note">Alternative to active ${esc(s.duplicate_of)}</span>`:''}</div><label class="symbol-field"><span>Canonical instrument</span><input id="canon_${i}" value="${esc(s.canonical_instrument)}"></label><label class="symbol-field"><span>Mapping state</span><select id="state_${i}"><option value="confirmed" ${s.mapping_state==='Confirmed'?'selected':''}>Confirmed</option><option value="review" ${s.mapping_state==='NeedsReview'?'selected':''}>Needs review</option><option value="ignored" ${s.mapping_state==='Ignored'||s.mapping_state==='Duplicate'?'selected':''}>${s.mapping_state==='Duplicate'?'Duplicate / ignored':'Ignored'}</option></select></label><label class="symbol-field"><span>Priority</span><input id="priority_${i}" type="number" min="0" placeholder="Default" value="${s.priority_override??''}"></label><button class="symbol-save" onclick='saveSymbol(${JSON.stringify(s.provider_symbol)},${i})'>Save</button></div>`).join('')||'<div style="padding:16px">No symbols found.</div>'}
 async function saveSymbol(providerSymbol,index){const state=document.getElementById('state_'+index).value,canonical=document.getElementById('canon_'+index).value.trim(),priority=document.getElementById('priority_'+index).value;const payload={provider_key:symbolProvider,provider_symbol:providerSymbol,canonical_instrument:canonical,enabled:state==='confirmed',allow_live:state==='confirmed',allow_history:state==='confirmed',priority_override:priority===''?null:Number(priority)};const r=await fetch('/api/symbol-policies',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(payload)}),x=await r.json();if(!r.ok){alert(x.detail||'Could not save mapping');return}await loadSymbols(false);load()}
+async function fullHistory(key){if(!confirm('Start a low-priority full-history M1 backfill for every configured instrument? Existing candles will be preserved.'))return;const r=await fetch('/api/full-history/'+encodeURIComponent(key),{method:'POST'});const x=await r.json();alert(r.ok?'Full-history backfill started in the background':(x.detail||'Could not start full-history backfill'));load()}
 async function backfill(key,symbol){const r=await fetch('/api/backfill',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider_key:key,symbol:symbol,timeframe:'1m',days:7})});const x=await r.json();alert(r.ok?`Backfill complete: ${x.written} candles, ${x.gaps} gaps`:(x.detail||'Backfill failed'));load()}
 async function repairGaps(key){const r=await fetch('/api/gaps/repair',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider_key:key,limit:500})});const x=await r.json();alert(r.ok?`Repair complete: ${x.gaps_resolved} resolved, ${x.gaps_remaining} remaining`:(x.detail||'Repair failed'));load()}
 async function rebuildHistory(key){if(!confirm(`Delete and rebuild all stored candle history for ${key} from fresh 1-minute MT5 history?`))return;const r=await fetch('/api/history/rebuild',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider_key:key,days:7})});const x=await r.json();alert(r.ok?`Clean rebuild complete for ${(x.rebuilt||[]).length} instruments`:(x.detail||'Rebuild failed'));load()}

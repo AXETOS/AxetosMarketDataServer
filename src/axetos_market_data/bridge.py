@@ -92,6 +92,7 @@ class BridgeCandlesRequest(BaseModel):
     canonical_instrument: str = Field(validation_alias=AliasChoices("CanonicalInstrument", "canonicalInstrument"), serialization_alias="CanonicalInstrument")
     interval: str = Field(validation_alias=AliasChoices("Interval", "interval"), serialization_alias="Interval")
     candles: list[BridgeCandle] = Field(default_factory=list, validation_alias=AliasChoices("Candles", "candles"), serialization_alias="Candles")
+    request_id: str | None = Field(default=None, validation_alias=AliasChoices("RequestId", "requestId"), serialization_alias="RequestId")
     model_config = {"populate_by_name": True}
 
 
@@ -254,8 +255,8 @@ class Mt5BridgeService:
             except ValueError:
                 continue
         values = self._sanitize_historical_minutes(incoming)
-        written = self.store.upsert_candles(values)
-        if values:
+        written = self.store.insert_candles_missing(values) if request.request_id else self.store.upsert_candles(values)
+        if values and not request.request_id:
             from .aggregation import CANONICAL_DERIVED_TIMEFRAMES, CandleAggregator
             aggregator = CandleAggregator(self.store)
             for timeframe in CANONICAL_DERIVED_TIMEFRAMES:

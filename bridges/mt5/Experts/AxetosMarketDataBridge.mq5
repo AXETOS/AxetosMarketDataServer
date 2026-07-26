@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.15"
+#property version   "1.16"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -8,29 +8,17 @@ input string InpServerUrl         = "http://127.0.0.1:8000";
 input string InpBridgeToken       = ""; // Optional. Leave blank for local loopback use.
 input bool   InpDiscoverAllSymbols = true;
 input int    InpDiscoveryBatchSize = 75;
-input int    InpBackfillBarsM1     = 2000;
-input int    InpBackfillStableChecks = 5;
-input int    InpBackfillRetrySeconds = 2;
-input int    InpBackfillMaxAttempts = 90;
 input int    InpRequestTimeoutMs   = 5000;
 input int    InpHeartbeatSeconds   = 1;
 input int    InpSelectionRefreshSeconds = 15;
-input bool   InpSendHistoricalBars = true;
+input bool   InpSendHistoricalBars = false; // Full history is server-controlled.
 input int    InpHttpMaxBackoffSeconds = 30;
 
 string g_symbols[];
 datetime g_last_m1_bar[];
-int g_backfill_symbol_index = 0;
-int g_backfill_interval_index = 0;
 datetime g_last_heartbeat = 0;
 datetime g_last_selection_refresh = 0;
 string g_terminal_id = "";
-bool g_backfill_enabled = true;
-int g_backfill_attempt_count = 0;
-int g_backfill_stable_count = 0;
-int g_backfill_last_count = -1;
-datetime g_backfill_last_oldest = 0;
-datetime g_backfill_next_attempt = 0;
 int g_http_consecutive_failures = 0;
 datetime g_http_retry_after = 0;
 int g_http_suppressed_requests = 0;
@@ -77,14 +65,13 @@ void OnTimer()
    if(g_last_selection_refresh == 0 || now - g_last_selection_refresh >= InpSelectionRefreshSeconds)
    {
       RefreshServerSelection();
-      RefreshRepairRequest();
    }
 
    // Live candles are built by the server from this single tick stream.
    SendCurrentTicks();
 
-   if(InpSendHistoricalBars && g_backfill_enabled)
-      SendNextBackfillJob();
+   // Server-controlled full-history requests are polled after live ticks.
+   RefreshRepairRequest();
 }
 
 string ResolveProviderSymbol(string configured_symbol)
@@ -429,119 +416,6 @@ void SendCurrentTicks()
    PostJson("/api/market-data/ingest/mt5/ticks", json);
 }
 
-int BackfillTargetBars(string interval)
-{
-   if(interval == "1m")
-      return MathMax(10, InpBackfillBarsM1);
-   return 500;
-}
-
-void ResetBackfillProgress()
-{
-   g_backfill_attempt_count = 0;
-   g_backfill_stable_count = 0;
-   g_backfill_last_count = -1;
-   g_backfill_last_oldest = 0;
-   g_backfill_next_attempt = 0;
-}
-
-bool IsSeriesSynchronized(string symbol, ENUM_TIMEFRAMES timeframe)
-{
-   long synchronized = 0;
-   if(!SeriesInfoInteger(symbol, timeframe, SERIES_SYNCHRONIZED, synchronized))
-      return false;
-   return synchronized != 0;
-}
-
-void AdvanceBackfillJob()
-{
-   ResetBackfillProgress();
-
-   // Upload only authoritative one-minute history. The server derives every
-   // larger interval from its stored one-minute candles.
-   g_backfill_symbol_index++;
-   if(g_backfill_symbol_index >= ArraySize(g_symbols))
-   {
-      g_backfill_symbol_index = 0;
-      g_backfill_interval_index++;
-      if(g_backfill_interval_index >= ArraySize(g_timeframes))
-      {
-         g_backfill_interval_index = 0;
-         g_backfill_enabled = false;
-         Print("Axetos MT5 Bridge: progressive historical backfill completed.");
-      }
-   }
-}
-
-void SendNextBackfillJob()
-{
-   if(ArraySize(g_symbols) == 0 || !g_backfill_enabled)
-      return;
-
-   datetime now = TimeCurrent();
-   if(g_backfill_next_attempt > 0 && now < g_backfill_next_attempt)
-      return;
-
-   string symbol = g_symbols[g_backfill_symbol_index];
-   ENUM_TIMEFRAMES timeframe = g_timeframes[g_backfill_interval_index];
-   string interval = g_intervals[g_backfill_interval_index];
-   int target = BackfillTargetBars(interval);
-   int copied = 0;
-   datetime oldest = 0;
-   bool sent = SendCandlesWithCoverage(symbol, timeframe, interval, target, 1, copied, oldest);
-   g_backfill_attempt_count++;
-
-   bool progressed = false;
-   if(sent && copied > 0)
-   {
-      progressed = (g_backfill_last_count < 0 || copied > g_backfill_last_count ||
-                    (oldest > 0 && (g_backfill_last_oldest == 0 || oldest < g_backfill_last_oldest)));
-
-      if(progressed)
-      {
-         PrintFormat("Axetos MT5 Bridge: progressive backfill %s %s expanded to %d bars; oldest=%s.",
-                     symbol, interval, copied, TimeToString(oldest, TIME_DATE|TIME_MINUTES));
-         g_backfill_stable_count = 0;
-      }
-      else
-      {
-         g_backfill_stable_count++;
-         PrintFormat("Axetos MT5 Bridge: progressive backfill %s %s unchanged at %d bars (%d/%d stable checks).",
-                     symbol, interval, copied, g_backfill_stable_count, MathMax(1, InpBackfillStableChecks));
-      }
-
-      g_backfill_last_count = copied;
-      if(oldest > 0)
-         g_backfill_last_oldest = oldest;
-   }
-   else
-   {
-      g_backfill_stable_count++;
-      PrintFormat("Axetos MT5 Bridge: progressive backfill %s %s returned no bars (%d/%d stable checks).",
-                  symbol, interval, g_backfill_stable_count, MathMax(1, InpBackfillStableChecks));
-   }
-
-   bool target_reached = sent && copied >= target;
-   bool provider_limit_reached = g_backfill_stable_count >= MathMax(1, InpBackfillStableChecks) &&
-                                 IsSeriesSynchronized(symbol, timeframe);
-   bool attempt_limit_reached = g_backfill_attempt_count >= MathMax(1, InpBackfillMaxAttempts);
-
-   if(target_reached || provider_limit_reached || attempt_limit_reached)
-   {
-      string reason = target_reached ? "target reached" :
-                      (provider_limit_reached ? "provider limit reached" : "attempt limit reached");
-      PrintFormat("Axetos MT5 Bridge: historical backfill %s %s completed with %d bars; oldest=%s; %s.",
-                  symbol, interval, MathMax(0, copied),
-                  oldest > 0 ? TimeToString(oldest, TIME_DATE|TIME_MINUTES) : "unknown", reason);
-      AdvanceBackfillJob();
-      return;
-   }
-
-   // Give MT5 time to request and append older bars before polling this exact
-   // symbol/timeframe again. Live one-second ticks continue independently.
-   g_backfill_next_attempt = now + MathMax(1, InpBackfillRetrySeconds);
-}
-
 bool SendCandles(string symbol, ENUM_TIMEFRAMES timeframe, string interval, int count, int start_pos, int &copied_out)
 {
    datetime oldest = 0;
@@ -590,17 +464,21 @@ bool SendCandlesWithCoverage(string symbol, ENUM_TIMEFRAMES timeframe, string in
 
 
 bool SendCandlesForDateRange(string symbol, ENUM_TIMEFRAMES timeframe, string interval,
-                             string start_date, string end_date, int &copied_out)
+                             string start_date, string end_date, int &copied_out, string request_id)
 {
    copied_out = 0;
 
    string normalized_start = start_date;
    string normalized_end = end_date;
+   StringReplace(normalized_start, "T", " ");
+   StringReplace(normalized_end, "T", " ");
+   int plus_pos = StringFind(normalized_start, "+"); if(plus_pos > 0) normalized_start = StringSubstr(normalized_start, 0, plus_pos);
+   plus_pos = StringFind(normalized_end, "+"); if(plus_pos > 0) normalized_end = StringSubstr(normalized_end, 0, plus_pos);
    StringReplace(normalized_start, "-", ".");
    StringReplace(normalized_end, "-", ".");
 
-   datetime from_time = StringToTime(normalized_start + " 00:00:00");
-   datetime to_time = StringToTime(normalized_end + " 23:59:59");
+   datetime from_time = StringToTime(normalized_start);
+   datetime to_time = StringToTime(normalized_end);
    if(from_time <= 0 || to_time <= 0 || to_time < from_time)
    {
       PrintFormat("Axetos MT5 Bridge: invalid targeted repair range %s through %s for %s %s.",
@@ -651,9 +529,9 @@ bool SendCandlesForDateRange(string symbol, ENUM_TIMEFRAMES timeframe, string in
    }
 
    string json = StringFormat(
-      "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"%s\",\"candles\":[%s]}",
+      "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"%s\",\"requestId\":\"%s\",\"candles\":[%s]}",
       JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), JsonEscape(symbol),
-      JsonEscape(CanonicalSymbol(symbol)), interval, items);
+      JsonEscape(CanonicalSymbol(symbol)), interval, JsonEscape(request_id), items);
    return PostJson("/api/market-data/ingest/mt5/candles", json);
 }
 
@@ -673,51 +551,54 @@ void RefreshRepairRequest()
 
    string parts[];
    int part_count = StringSplit(response, '|', parts);
-   if(part_count != 5)
+   if(part_count < 4)
+      return;
+
+   string command = parts[0];
+   StringTrimLeft(command); StringTrimRight(command);
+   string symbol = parts[1];
+   string interval = parts[2];
+   StringTrimLeft(symbol); StringTrimRight(symbol);
+   StringTrimLeft(interval); StringTrimRight(interval);
+   string resolved = ResolveProviderSymbol(symbol);
+
+   if(command == "AVAILABILITY" && part_count == 4)
    {
-      // Old two-field requests caused the EA to upload an entire historical
-      // block repeatedly. The server now issues bounded five-field requests;
-      // ignore stale legacy requests instead of replaying full history.
-      PrintFormat("Axetos MT5 Bridge: ignored legacy/unbounded repair request '%s'.", response);
+      string request_id = parts[3];
+      long earliest = 0;
+      bool ok = resolved != "" && SymbolSelect(resolved, true) &&
+                SeriesInfoInteger(resolved, PERIOD_M1, SERIES_SERVER_FIRSTDATE, earliest);
+      string result_path = "/api/market-data/mt5/history-availability?providerKey=" + InpProviderKey +
+                           "&requestId=" + request_id;
+      if(ok && earliest > 0)
+         result_path += "&earliestUtc=" + IsoUtc((datetime)earliest);
+      PostJson(result_path, "{}");
       return;
    }
 
-   string symbol = parts[0];
-   string interval = parts[1];
-   string start_date = parts[2];
-   string end_date = parts[3];
-   string request_id = parts[4];
-   StringTrimLeft(symbol); StringTrimRight(symbol);
-   StringTrimLeft(interval); StringTrimRight(interval);
-   StringTrimLeft(start_date); StringTrimRight(start_date);
-   StringTrimLeft(end_date); StringTrimRight(end_date);
+   if(command != "BACKFILL" || part_count != 6)
+      return;
+
+   string start_time = parts[3];
+   string end_time = parts[4];
+   string request_id = parts[5];
+   StringTrimLeft(start_time); StringTrimRight(start_time);
+   StringTrimLeft(end_time); StringTrimRight(end_time);
    StringTrimLeft(request_id); StringTrimRight(request_id);
 
-   // Repairs are always sourced as one-minute bars. The server rebuilds the
-   // requested higher timeframe from canonical one-minute history.
-   interval = "1m";
-   ENUM_TIMEFRAMES timeframe = PERIOD_M1;
-
-   string resolved = ResolveProviderSymbol(symbol);
    bool completed = false;
    int copied = 0;
    if(resolved != "" && SymbolSelect(resolved, true))
-      completed = SendCandlesForDateRange(resolved, timeframe, interval, start_date, end_date, copied);
+      completed = SendCandlesForDateRange(resolved, PERIOD_M1, "1m", start_time, end_time, copied, request_id);
 
    string result_path = "/api/market-data/mt5/repair-result?providerKey=" + InpProviderKey +
                         "&terminalInstanceId=" + g_terminal_id +
                         "&providerSymbol=" + symbol +
-                        "&interval=" + interval +
-                        "&completed=" + (completed ? "true" : "false") +
+                        "&interval=1m&completed=" + (completed ? "true" : "false") +
+                        "&barsReceived=" + IntegerToString(copied) +
+                        "&barsInserted=" + IntegerToString(copied) +
                         "&requestId=" + request_id;
    PostJson(result_path, "{}");
-
-   if(completed)
-      PrintFormat("Axetos MT5 Bridge: targeted repair %s %s %s through %s submitted %d bar(s); request=%s.",
-                  resolved, interval, start_date, end_date, copied, request_id);
-   else
-      PrintFormat("Axetos MT5 Bridge: targeted repair %s %s %s through %s failed; request=%s.",
-                  symbol, interval, start_date, end_date, request_id);
 }
 
 void RefreshServerSelection()
@@ -739,10 +620,6 @@ void RefreshServerSelection()
          SymbolSelect(g_symbols[i], false);
       ArrayResize(g_symbols, 0);
       ArrayResize(g_last_m1_bar, 0);
-      g_backfill_symbol_index = 0;
-      g_backfill_interval_index = 0;
-      ResetBackfillProgress();
-      g_backfill_enabled = false;
       Print("Axetos MT5 Bridge: server selection is empty; streaming stopped.");
       return;
    }
@@ -801,10 +678,6 @@ void RefreshServerSelection()
       g_last_m1_bar[i] = iTime(resolved[i], PERIOD_M1, 0);
    }
 
-   g_backfill_symbol_index = 0;
-   g_backfill_interval_index = 0;
-   ResetBackfillProgress();
-   g_backfill_enabled = InpSendHistoricalBars;
    PrintFormat("Axetos MT5 Bridge: server selection applied; streaming-symbols=%d.", accepted);
 }
 

@@ -425,6 +425,29 @@ class MarketDataStore:
             count += 1
         return count
 
+
+    def earliest_candle_time(self, provider: str, instrument: str, timeframe: str = "1m") -> datetime | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT MIN(open_time_utc) FROM candles WHERE provider=? AND instrument=? AND timeframe=?",
+                (provider, instrument, timeframe),
+            ).fetchone()
+        return datetime.fromisoformat(row[0]) if row and row[0] else None
+
+    def insert_candles_missing(self, candles: Iterable[Candle]) -> int:
+        values = list(candles)
+        if not values:
+            return 0
+        rows = [(c.provider,c.instrument,c.timeframe,_iso(c.open_time),str(c.open),str(c.high),str(c.low),str(c.close),c.tick_count,None if c.volume is None else str(c.volume),int(c.complete)) for c in values]
+        with self.connect() as connection:
+            before = connection.total_changes
+            connection.executemany(
+                """INSERT OR IGNORE INTO candles(provider,instrument,timeframe,open_time_utc,open,high,low,close,tick_count,volume,complete) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                rows,
+            )
+            written = connection.total_changes - before
+        return written
+
     def read_candle_times(self, provider: str, instrument: str, timeframe: str, start: datetime, end: datetime) -> list[datetime]:
         with self.connect() as connection:
             rows = connection.execute("SELECT open_time_utc FROM candles WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc>=? AND open_time_utc<?", (provider, instrument, timeframe, _iso(start), _iso(end))).fetchall()

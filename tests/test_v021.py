@@ -23,4 +23,4 @@ def test_mt5_form_uses_managed_symbols(tmp_path):
 
 def test_release_version():
     from axetos_market_data import __version__
-    assert __version__ == '0.56.0'
+    assert __version__ == '0.57.0'

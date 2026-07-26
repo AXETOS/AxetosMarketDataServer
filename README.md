@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.51.0
+## Version 0.52.0
 
-Version 0.51.0 makes the Market Data Server the sole authority for MT5 live subscriptions. Each bridge polls the server for the exact provider symbol list and streams only those configured instruments. MT5 Market Watch/discovery selection is diagnostic only. Removing all configured symbols now stops bridge streaming instead of retaining a stale local list. MT5 bridge version 1.13 accompanies this release.
+Version 0.52.0 makes the Market Data Server the sole authority for MT5 live subscriptions. Each bridge polls the server for the exact provider symbol list and streams only those configured instruments. MT5 Market Watch/discovery selection is diagnostic only. Removing all configured symbols now stops bridge streaming instead of retaining a stale local list. MT5 bridge version 1.13 accompanies this release.
 
 Version 0.50.0 restores closed-market flatline suppression. A one-minute candle whose complete OHLC exactly matches the previous persisted candle remains pending and is not stored. When price movement resumes, the server checks stored/provider history for the missing interval before classifying the gap. Missing minutes in gaps of at most 60 minutes are flat-filled only after that verification; longer gaps are preserved as market closures unless authoritative provider history supplies candles. Higher timeframes continue to derive exclusively from accepted one-minute candles.
 
@@ -608,6 +608,6 @@ Derived intervals are built only from stored lower-level server candles:
 MT5 historical bridge ingestion accepts authoritative `1m` history only; all larger intervals are rebuilt by the server.
 
 
-## v0.51.0 server-controlled MT5 subscriptions
+## v0.52.0 server-controlled MT5 subscriptions
 
 The control plane is authoritative: `GET /api/market-data/mt5/enabled-symbols.txt` returns the exact configured symbols for the requested provider. The bridge applies that list every refresh cycle, deselects removed instruments, and submits ticks, completed minute bars, and backfill only for the active server-selected set. An empty server selection stops streaming.

@@ -1,25 +1,20 @@
 #property copyright "AxetosOS"
-#property version   "1.13"
+#property version   "1.14"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
 input string InpProviderKey       = "Oanda.MT5";
 input string InpServerUrl         = "http://127.0.0.1:8000";
 input string InpBridgeToken       = ""; // Optional. Leave blank for local loopback use.
-input string InpSymbols           = "EURUSD,GBPUSD,USDJPY,USDCHF,USDCAD,AUDUSD,NZDUSD";
 input bool   InpDiscoverAllSymbols = true;
 input int    InpDiscoveryBatchSize = 75;
 input int    InpBackfillBarsM1     = 2000;
-input int    InpBackfillBarsM15    = 2000;
-input int    InpBackfillBarsH1     = 2000;
-input int    InpBackfillBarsD1     = 4000;
 input int    InpBackfillStableChecks = 5;
 input int    InpBackfillRetrySeconds = 2;
 input int    InpBackfillMaxAttempts = 90;
 input int    InpRequestTimeoutMs   = 5000;
 input int    InpHeartbeatSeconds   = 1;
 input int    InpSelectionRefreshSeconds = 15;
-input bool   InpUseServerSelection = true;
 input bool   InpSendHistoricalBars = true;
 input int    InpHttpMaxBackoffSeconds = 30;
 
@@ -42,67 +37,29 @@ int g_http_suppressed_requests = 0;
 
 // Provider-native week/month history is never requested. The server builds
 // Monday-Sunday weeks and true calendar months exclusively from canonical daily data.
-ENUM_TIMEFRAMES g_timeframes[4] = { PERIOD_D1, PERIOD_H1, PERIOD_M15, PERIOD_M1 };
-string g_intervals[4] = { "1d", "1h", "15m", "1m" };
+ENUM_TIMEFRAMES g_timeframes[1] = { PERIOD_M1 };
+string g_intervals[1] = { "1m" };
 
 int OnInit()
 {
-   string raw[];
-   int count = StringSplit(InpSymbols, ',', raw);
-   if(count <= 0)
-   {
-      Print("Axetos MT5 Bridge: no symbols configured.");
-      return INIT_FAILED;
-   }
-
-   ArrayResize(g_symbols, count);
-   ArrayResize(g_last_m1_bar, count);
-   int accepted = 0;
-   for(int i = 0; i < count; i++)
-   {
-      string symbol = raw[i];
-      StringTrimLeft(symbol);
-      StringTrimRight(symbol);
-      if(symbol == "")
-         continue;
-
-      string resolved_symbol = ResolveProviderSymbol(symbol);
-      if(resolved_symbol == "" || !SymbolSelect(resolved_symbol, true))
-      {
-         PrintFormat("Axetos MT5 Bridge: symbol '%s' is unavailable in this terminal.", symbol);
-         continue;
-      }
-
-      g_symbols[accepted] = resolved_symbol;
-      // Start from the currently open minute so attaching/restarting the EA does not
-      // immediately resend the same recent candle batch.
-      g_last_m1_bar[accepted] = iTime(resolved_symbol, PERIOD_M1, 0);
-      accepted++;
-   }
-
-   ArrayResize(g_symbols, accepted);
-   ArrayResize(g_last_m1_bar, accepted);
-   if(accepted == 0)
-      return INIT_FAILED;
+   // The Market Data Server is the sole subscription authority. The bridge starts
+   // empty and refuses to stream anything until the server returns an explicit list.
+   ArrayResize(g_symbols, 0);
+   ArrayResize(g_last_m1_bar, 0);
 
    g_terminal_id = BuildTerminalId();
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.13: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.14: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
-   else
-      SendStreamingInstrumentCatalogue();
 
-   if(InpUseServerSelection)
-   {
-      RefreshServerSelection();
-      RefreshRepairRequest();
-   }
+   RefreshServerSelection();
+   RefreshRepairRequest();
    PrintFormat("Axetos MT5 Bridge started: provider=%s terminal=%s streaming-symbols=%d server=%s",
-               InpProviderKey, g_terminal_id, accepted, InpServerUrl);
+               InpProviderKey, g_terminal_id, ArraySize(g_symbols), InpServerUrl);
    return INIT_SUCCEEDED;
 }
 
@@ -117,8 +74,7 @@ void OnTimer()
    if(g_last_heartbeat == 0 || now - g_last_heartbeat >= InpHeartbeatSeconds)
       SendHeartbeat();
 
-   if(InpUseServerSelection &&
-      (g_last_selection_refresh == 0 || now - g_last_selection_refresh >= InpSelectionRefreshSeconds))
+   if(g_last_selection_refresh == 0 || now - g_last_selection_refresh >= InpSelectionRefreshSeconds)
    {
       RefreshServerSelection();
       RefreshRepairRequest();
@@ -491,12 +447,6 @@ void SendCompletedMinuteBars()
 
 int BackfillTargetBars(string interval)
 {
-   if(interval == "1d")
-      return MathMax(10, InpBackfillBarsD1);
-   if(interval == "1h")
-      return MathMax(10, InpBackfillBarsH1);
-   if(interval == "15m")
-      return MathMax(10, InpBackfillBarsM15);
    if(interval == "1m")
       return MathMax(10, InpBackfillBarsM1);
    return 500;
@@ -523,8 +473,8 @@ void AdvanceBackfillJob()
 {
    ResetBackfillProgress();
 
-   // Finish the current provider timeframe for every enabled instrument before
-   // moving to the next: 1d -> 1h -> 15m -> 1m.
+   // Upload only authoritative one-minute history. The server derives every
+   // larger interval from its stored one-minute candles.
    g_backfill_symbol_index++;
    if(g_backfill_symbol_index >= ArraySize(g_symbols))
    {
@@ -759,15 +709,10 @@ void RefreshRepairRequest()
    StringTrimLeft(end_date); StringTrimRight(end_date);
    StringTrimLeft(request_id); StringTrimRight(request_id);
 
-   if(interval == "1wk" || interval == "1mo")
-      interval = "1d";
-
-   ENUM_TIMEFRAMES timeframe = PERIOD_CURRENT;
-   if(interval == "1m") timeframe = PERIOD_M1;
-   else if(interval == "15m") timeframe = PERIOD_M15;
-   else if(interval == "1h") timeframe = PERIOD_H1;
-   else if(interval == "1d") timeframe = PERIOD_D1;
-   else return;
+   // Repairs are always sourced as one-minute bars. The server rebuilds the
+   // requested higher timeframe from canonical one-minute history.
+   interval = "1m";
+   ENUM_TIMEFRAMES timeframe = PERIOD_M1;
 
    string resolved = ResolveProviderSymbol(symbol);
    bool completed = false;
@@ -1039,10 +984,6 @@ datetime BrokerTimeToUtc(datetime broker_time)
 
 datetime CandleTimeToUtc(datetime broker_time, string interval)
 {
-   // Daily candles are canonical trading dates in AxetosOS. Preserve their
-   // date key at 00:00 rather than shifting them to the previous UTC evening.
-   if(interval == "1d")
-      return broker_time;
    return BrokerTimeToUtc(broker_time);
 }
 

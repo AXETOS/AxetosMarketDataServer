@@ -931,6 +931,11 @@ def create_app(
             if active_provider is None:
                 active_provider = store.preferred_candle_provider(instrument, timeframe)
         values = store.read_candles(instrument, timeframe, limit, active_provider, from_utc, to_utc)
+        if provider is None and not values:
+            available_provider = store.preferred_candle_provider(instrument, timeframe)
+            if available_provider is not None and available_provider != active_provider:
+                active_provider = available_provider
+                values = store.read_candles(instrument, timeframe, limit, active_provider, from_utc, to_utc)
         return {
             "instrument": instrument,
             "timeframe": timeframe,
@@ -968,6 +973,10 @@ def create_app(
             if isinstance(preferred, dict):
                 active_provider = str(preferred["provider_key"])
         value = store.latest_bridge_quote(instrument, active_provider)
+        if provider is None and value is None:
+            value = store.latest_bridge_quote(instrument)
+            if value is not None:
+                active_provider = str(value["provider_key"])
         if value is None:
             raise HTTPException(404, "No quote is available for the requested instrument")
         bid = Decimal(str(value["bid"]))

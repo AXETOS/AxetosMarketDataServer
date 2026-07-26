@@ -19,9 +19,9 @@ def tick(at: datetime, bid: str, ask: str, provider: str = "Oanda.MT5") -> Tick:
 
 
 def test_release_readme_and_runtime_data_policy() -> None:
-    assert __version__ == "0.45.1"
+    assert __version__ == "0.46.0"
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "## Version 0.45.1" in readme
+    assert "## Version 0.46.0" in readme
     assert "GET /api/feed-status" in readme
     assert "flat candles" in readme
     assert "data/" in (ROOT / ".gitignore").read_text(encoding="utf-8")

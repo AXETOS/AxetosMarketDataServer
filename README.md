@@ -4,11 +4,14 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.45.1
+## Version 0.46.0
 
-Version 0.45.1 removes a timing-sensitive benchmark CI race. Benchmark jobs now expose an event-backed completion wait boundary, release tests no longer depend on a fixed ten-second polling window, and API benchmark tests wait for their background worker before application teardown. The HTTP benchmark API remains asynchronous.
+Version 0.46.0 makes canonical read routing availability-aware. When the configured preferred provider has no candle rows for the requested instrument and timeframe, `/api/candles` falls back to the provider that actually owns the newest stored candle history. Quote reads follow the same rule: `/api/quotes/{instrument}` first respects canonical routing, then falls back to the newest available bridge quote when the preferred provider has no quote. Explicit `provider` requests remain strict and never fall back. This prevents instruments such as Bitcoin from appearing unavailable merely because a higher-priority configured provider does not supply that market.
 
-Version 0.45.1 makes the Market Data Server the sole candle producer for Trading Platform consumers. Every accepted authoritative tick now persists the current incomplete one-minute candle and refreshes the server-owned canonical 5m, 15m, 30m, 1h, 4h, and 1d candles. The candle API therefore returns both completed history and the current server-built display candle without requiring any client-side OHLC construction or aggregation. Completed and incomplete state remains explicit through the existing `complete` field, and genuine gaps remain absent rather than being synthesized by consumers.
+
+Version 0.46.0 removes a timing-sensitive benchmark CI race. Benchmark jobs now expose an event-backed completion wait boundary, release tests no longer depend on a fixed ten-second polling window, and API benchmark tests wait for their background worker before application teardown. The HTTP benchmark API remains asynchronous.
+
+Version 0.46.0 makes the Market Data Server the sole candle producer for Trading Platform consumers. Every accepted authoritative tick now persists the current incomplete one-minute candle and refreshes the server-owned canonical 5m, 15m, 30m, 1h, 4h, and 1d candles. The candle API therefore returns both completed history and the current server-built display candle without requiring any client-side OHLC construction or aggregation. Completed and incomplete state remains explicit through the existing `complete` field, and genuine gaps remain absent rather than being synthesized by consumers.
 
 ## Version 0.43.0
 
@@ -583,7 +586,7 @@ Version 0.20.0 adds a dedicated MT5 symbol-management workflow. The management U
 
 Automatic guesses are intentionally disabled until reviewed. This prevents ambiguous broker CFDs from entering the authoritative market-data catalog.
 
-### v0.45.1 Trading Platform read contract
+### v0.46.0 Trading Platform read contract
 
 - Resolves the canonical provider server-side when candle or quote requests omit a provider.
 - Adds the canonical `/api/quotes/{instrument}` read endpoint.

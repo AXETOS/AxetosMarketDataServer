@@ -78,6 +78,7 @@ class CandleBuilder:
         if active is None:
             opening = self._previous_close(tick) if continuity == "CONNECTED" else None
             self._active[key] = _MutableCandle.from_tick(tick, opening)
+            self._store.upsert_candle(self._active[key].freeze(complete=False))
             return
         if minute < active.open_time:
             raise ValueError("out-of-order tick belongs to an already finalized minute")
@@ -86,8 +87,10 @@ class CandleBuilder:
             self._store.upsert_candle(active.freeze(complete=True))
             opening = previous_close if continuity == "CONNECTED" else None
             self._active[key] = _MutableCandle.from_tick(tick, opening)
+            self._store.upsert_candle(self._active[key].freeze(complete=False))
             return
         active.apply(tick)
+        self._store.upsert_candle(active.freeze(complete=False))
 
     def finalize(self, provider: str, instrument: str, complete: bool = True) -> Candle | None:
         active = self._active.pop((provider, instrument), None)

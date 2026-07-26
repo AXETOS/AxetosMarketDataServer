@@ -35,8 +35,9 @@ def test_builds_and_finalizes_one_minute_candle(tmp_path) -> None:
     )
 
     candles = store.read_candles("EUR/USD", "1m", provider="test")
-    assert len(candles) == 1
+    assert len(candles) == 2
     candle = candles[0]
+    assert candles[1].complete is False
     assert candle.open == Decimal("1.1001")
     assert candle.high == Decimal("1.1005")
     assert candle.low == Decimal("1.0999")

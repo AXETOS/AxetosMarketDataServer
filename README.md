@@ -4,6 +4,10 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.44.0
+
+Version 0.44.0 makes the Market Data Server the sole candle producer for Trading Platform consumers. Every accepted authoritative tick now persists the current incomplete one-minute candle and refreshes the server-owned canonical 5m, 15m, 30m, 1h, 4h, and 1d candles. The candle API therefore returns both completed history and the current server-built display candle without requiring any client-side OHLC construction or aggregation. Completed and incomplete state remains explicit through the existing `complete` field, and genuine gaps remain absent rather than being synthesized by consumers.
+
 ## Version 0.43.0
 
 Version 0.43.0 restores the MT5 bridge control-plane contract. The server now exposes plain-text enabled-symbol and repair-request endpoints plus repair-result acknowledgement, authorizes them with the bridge token, and returns selected provider symbols for the exact terminal instance. Bridge v1.12 distinguishes network/server outages from HTTP application errors: only transport failures and HTTP 5xx responses trigger shared exponential backoff, while 4xx endpoint or configuration responses are reported without suppressing heartbeat, ticks, candles, or other healthy requests.

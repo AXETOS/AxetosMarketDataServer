@@ -44,7 +44,7 @@ def test_v0341_release_metadata_and_numpy_dev_dependency():
     root = Path(__file__).resolve().parents[1]
     pyproject = (root / "pyproject.toml").read_text()
     readme = (root / "README.md").read_text()
-    assert __version__ == "0.43.0"
-    assert 'version = "0.43.0"' in pyproject
+    assert __version__ == "0.44.0"
+    assert 'version = "0.44.0"' in pyproject
     assert '"numpy>=1.26"' in pyproject
-    assert "## Version 0.43.0" in readme
+    assert "## Version 0.44.0" in readme

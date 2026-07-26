@@ -912,11 +912,17 @@ def create_app(
         timeframe: str = "1m",
         limit: int = Query(default=200, ge=1, le=5000),
         provider: str | None = None,
+        from_utc: datetime | None = None,
+        to_utc: datetime | None = None,
     ) -> dict[str, object]:
-        values = store.read_candles(instrument, timeframe, limit, provider)
+        if from_utc is not None and to_utc is not None and from_utc > to_utc:
+            raise HTTPException(400, "from_utc cannot be later than to_utc")
+        values = store.read_candles(instrument, timeframe, limit, provider, from_utc, to_utc)
         return {
             "instrument": instrument,
             "timeframe": timeframe,
+            "authority": "Axetos Market Data Server",
+            "candle_generation": "server",
             "count": len(values),
             "candles": [
                 {

@@ -527,12 +527,20 @@ class MarketDataStore:
         timeframe: str,
         limit: int = 500,
         provider: str | None = None,
+        from_utc: datetime | None = None,
+        to_utc: datetime | None = None,
     ) -> list[Candle]:
         where = "instrument = ? AND timeframe = ?"
         parameters: list[object] = [instrument, timeframe]
         if provider is not None:
             where += " AND provider = ?"
             parameters.append(provider)
+        if from_utc is not None:
+            where += " AND open_time_utc >= ?"
+            parameters.append(_iso(from_utc))
+        if to_utc is not None:
+            where += " AND open_time_utc <= ?"
+            parameters.append(_iso(to_utc))
         parameters.append(limit)
         with self.connect() as connection:
             rows = connection.execute(
@@ -559,6 +567,41 @@ class MarketDataStore:
                 complete=bool(row["complete"]),
             )
             for row in reversed(rows)
+        ]
+
+    def read_candles_range(
+        self,
+        instrument: str,
+        timeframe: str,
+        start: datetime,
+        end: datetime,
+        provider: str,
+    ) -> list[Candle]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM candles
+                WHERE instrument = ? AND timeframe = ? AND provider = ?
+                  AND open_time_utc >= ? AND open_time_utc < ?
+                ORDER BY open_time_utc ASC
+                """,
+                (instrument, timeframe, provider, _iso(start), _iso(end)),
+            ).fetchall()
+        return [
+            Candle(
+                provider=row["provider"],
+                instrument=row["instrument"],
+                timeframe=row["timeframe"],
+                open_time=datetime.fromisoformat(row["open_time_utc"]),
+                open=Decimal(row["open"]),
+                high=Decimal(row["high"]),
+                low=Decimal(row["low"]),
+                close=Decimal(row["close"]),
+                tick_count=int(row["tick_count"]),
+                volume=None if row["volume"] is None else Decimal(row["volume"]),
+                complete=bool(row["complete"]),
+            )
+            for row in rows
         ]
 
     def upsert_maintenance_schedule(self, name: str, task_type: str, enabled: bool, interval_minutes: int,

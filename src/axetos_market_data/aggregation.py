@@ -9,7 +9,12 @@ from .storage import MarketDataStore
 from .timeframes import bucket_end, bucket_start
 
 
-CANONICAL_DERIVED_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h", "1d")
+CANONICAL_DERIVED_TIMEFRAMES = ("5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mo")
+
+_SOURCE_TIMEFRAME = {
+    "5m": "1m", "15m": "1m", "30m": "1m", "1h": "1m", "4h": "1m", "1d": "1m",
+    "1w": "1h", "1mo": "1h",
+}
 
 
 class CandleAggregator:
@@ -19,7 +24,8 @@ class CandleAggregator:
     def aggregate(self, instrument: str, target_timeframe: str, provider: str) -> int:
         if target_timeframe == "1m":
             raise ValueError("target timeframe must be larger than 1m")
-        source = self._store.read_candles(instrument, "1m", limit=100_000, provider=provider)
+        source_timeframe = _SOURCE_TIMEFRAME[target_timeframe]
+        source = self._store.read_candles(instrument, source_timeframe, limit=100_000, provider=provider)
         groups: dict[object, list[Candle]] = defaultdict(list)
         for candle in source:
             groups[bucket_start(candle.open_time, target_timeframe)].append(candle)
@@ -41,7 +47,8 @@ class CandleAggregator:
             raise ValueError("target timeframe must be larger than 1m")
         start = bucket_start(reference_time, target_timeframe)
         end = bucket_end(reference_time, target_timeframe)
-        source = self._store.read_candles_range(instrument, "1m", start, end, provider)
+        source_timeframe = _SOURCE_TIMEFRAME[target_timeframe]
+        source = self._store.read_candles_range(instrument, source_timeframe, start, end, provider)
         if not source:
             return None
         candle = self._build(provider, instrument, target_timeframe, start, source)

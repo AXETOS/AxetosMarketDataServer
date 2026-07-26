@@ -1,17 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 
-UTC = timezone.utc
-
-
-def ensure_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        raise ValueError("datetime must be timezone-aware")
-    return value.astimezone(UTC)
+from .clock import ensure_server_local
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,7 +18,7 @@ class Tick:
     volume: Decimal | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "timestamp", ensure_utc(self.timestamp))
+        object.__setattr__(self, "timestamp", ensure_server_local(self.timestamp))
         if not self.provider.strip():
             raise ValueError("provider is required")
         if not self.instrument.strip():
@@ -67,8 +61,8 @@ class Candle:
     complete: bool = True
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "open_time", ensure_utc(self.open_time))
-        if self.timeframe not in {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}:
+        object.__setattr__(self, "open_time", ensure_server_local(self.open_time))
+        if self.timeframe not in {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mo"}:
             raise ValueError(f"unsupported timeframe: {self.timeframe}")
         if min(self.open, self.high, self.low, self.close) <= 0:
             raise ValueError("OHLC values must be positive")

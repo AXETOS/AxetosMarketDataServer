@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from .domain import Candle, Tick
@@ -76,7 +76,7 @@ class CandleBuilder:
         minute = bucket_start(tick.timestamp, "1m")
         active = self._active.get(key)
         if active is None:
-            opening = self._previous_close(tick) if continuity == "CONNECTED" else None
+            opening = self._previous_close(tick, minute) if continuity == "CONNECTED" else None
             self._active[key] = _MutableCandle.from_tick(tick, opening)
             self._store.upsert_candle(self._active[key].freeze(complete=False))
             return
@@ -85,7 +85,7 @@ class CandleBuilder:
         if minute > active.open_time:
             previous_close = active.close
             self._store.upsert_candle(active.freeze(complete=True))
-            opening = previous_close if continuity == "CONNECTED" else None
+            opening = previous_close if continuity == "CONNECTED" and minute == active.open_time + timedelta(minutes=1) else None
             self._active[key] = _MutableCandle.from_tick(tick, opening)
             self._store.upsert_candle(self._active[key].freeze(complete=False))
             return
@@ -105,6 +105,9 @@ class CandleBuilder:
             self._store.upsert_candle(candle.freeze(complete=complete))
         return len(self._active)
 
-    def _previous_close(self, tick: Tick) -> Decimal | None:
+    def _previous_close(self, tick: Tick, minute: datetime) -> Decimal | None:
         candles = self._store.read_candles(tick.instrument, "1m", limit=1, provider=tick.provider)
-        return candles[-1].close if candles else None
+        if not candles:
+            return None
+        previous = candles[-1]
+        return previous.close if previous.open_time + timedelta(minutes=1) == minute else None

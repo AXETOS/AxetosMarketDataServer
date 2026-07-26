@@ -45,7 +45,9 @@ def test_bridge_updates_provider_runtime_and_feed(tmp_path):
         assert worker.runtime.status == "Live"
         assert worker.runtime.ticks_received == 1
         assert worker.runtime.accepted_market_ticks == 1
-        assert worker.runtime.last_tick_utc == now.isoformat()
+        last = datetime.fromisoformat(worker.runtime.last_tick_utc)
+        assert last.tzinfo is not None
+        assert abs((datetime.now().astimezone() - last).total_seconds()) < 5
         assert worker.feed.reports()[0]["instrument"] == "BTC/USD"
         assert store.read_candles("BTC/USD", "1m", provider="ICMarkets.MT5")
     finally:

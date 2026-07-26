@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.48.0
+## Version 0.49.0
 
-Version 0.48.0 fixes live MT5 candle visibility for clients. Live bridge quote and tick timestamps are normalized to server receipt UTC when the bridge timestamp differs by more than five minutes, preventing broker-local timestamps mislabeled as UTC from placing current candles outside client query windows. A query-based `GET /api/quote?instrument=...` endpoint is also available so canonical symbols containing `/` do not depend on path encoding. Historical backfill timestamps remain unchanged.
+Version 0.49.0 fixes live MT5 candle visibility for clients. Live bridge quote and tick timestamps are normalized to server receipt UTC when the bridge timestamp differs by more than five minutes, preventing broker-local timestamps mislabeled as UTC from placing current candles outside client query windows. A query-based `GET /api/quote?instrument=...` endpoint is also available so canonical symbols containing `/` do not depend on path encoding. Historical backfill timestamps remain unchanged.
 
 ## Version 0.47.1
 
@@ -591,3 +591,16 @@ Automatic guesses are intentionally disabled until reviewed. This prevents ambig
 - Adds the canonical `/api/quotes/{instrument}` read endpoint.
 - Keeps compatibility read endpoints for older Trading Platform clients while `/api/candles` remains authoritative.
 - Candle and quote responses identify the active provider and never require client-side candle generation.
+
+## v0.49.0 candle authority model
+
+The server now uses one deterministic candle pipeline. Live MT5 observations are stamped with the market-data server's configured local wall clock, persisted as ticks, and used to maintain the authoritative one-minute OHLC candle. The client never constructs OHLC data.
+
+Derived intervals are built only from stored lower-level server candles:
+
+- `5m`, `15m`, `30m`, `1h`, `4h`, and `1d` are derived from `1m`.
+- `1w` and `1mo` are derived from `1h` using server-local calendar boundaries.
+- Adjacent live minutes connect by using the previous minute close as the next minute open.
+- A real missing minute, market closure, or detached feed starts from the first new tick and preserves the price gap.
+
+MT5 historical bridge ingestion accepts authoritative `1m` history only; all larger intervals are rebuilt by the server.

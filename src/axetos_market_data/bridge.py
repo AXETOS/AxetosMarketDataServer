@@ -4,12 +4,13 @@ import queue
 import threading
 from threading import RLock
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Iterable
 
 from pydantic import AliasChoices, BaseModel, Field
 
+from .clock import ensure_server_local, server_now
 from .domain import Candle, Tick
 from .service import MarketDataService
 from .storage import MarketDataStore
@@ -114,7 +115,7 @@ class QueueStats:
 
 
 class Mt5BridgeService:
-    ALLOWED_INTERVALS = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
+    ALLOWED_INTERVALS = {"1m"}
 
     def __init__(
         self,
@@ -129,7 +130,7 @@ class Mt5BridgeService:
         self._observation_sink = observation_sink
         self._queue: queue.Queue[BridgeTicksRequest | None] = queue.Queue(maxsize=max_queue_batches)
         self.stats = QueueStats()
-        self._services: dict[tuple[str, str], MarketDataService] = {}
+        self._service = MarketDataService(self.store)
         self._last_ingested: dict[tuple[str, str], datetime] = {}
         self._ingest_lock = RLock()
         self._thread = threading.Thread(target=self._consume, daemon=True, name="mt5-bridge-ingestion")
@@ -184,7 +185,7 @@ class Mt5BridgeService:
         """
         self.validate_identity(request.provider_key, request.terminal_instance_id)
         accepted = 0
-        now = datetime.now(UTC)
+        now = server_now()
         for item in request.quotes:
             if item.bid <= 0 or item.ask < item.bid:
                 continue
@@ -211,29 +212,23 @@ class Mt5BridgeService:
 
     @staticmethod
     def _normalize_live_timestamp(source_time: datetime, received_time: datetime) -> datetime:
-        """Keep live candle buckets in UTC even when an MT5 bridge labels broker time as UTC.
+        """Live candles use the market-data server's local wall clock.
 
-        Historical candle backfill remains source-timestamp based. For live quotes/ticks, a
-        large clock difference means the timestamp cannot safely be used for current candle
-        boundaries or client time-window queries, so server receipt UTC is authoritative.
+        MT5 broker clocks and terminal offsets are intentionally not used for live
+        candle boundaries. The original source time remains available in bridge
+        diagnostics, while authoritative ticks and candles follow one server clock.
         """
-        source_utc = source_time.astimezone(UTC)
-        received_utc = received_time.astimezone(UTC)
-        if abs(source_utc - received_utc) > timedelta(minutes=60):
-            return received_utc
-        return source_utc
+        return ensure_server_local(received_time)
 
     def _ingest_observation(self, terminal_instance_id: str, tick: Tick) -> bool:
         key = (tick.provider, tick.instrument)
-        service_key = (tick.provider, terminal_instance_id)
         with self._ingest_lock:
             previous = self._last_ingested.get(key)
             if previous is not None and tick.timestamp <= previous:
                 if self._observation_sink is not None:
                     self._observation_sink(tick, False)
                 return False
-            service = self._services.setdefault(service_key, MarketDataService(self.store))
-            service.run([tick])
+            self._service.run([tick])
             self._last_ingested[key] = tick.timestamp
             if self._observation_sink is not None:
                 self._observation_sink(tick, True)
@@ -244,14 +239,25 @@ class Mt5BridgeService:
         interval = request.interval.lower()
         if interval not in self.ALLOWED_INTERVALS: raise ValueError(f"Unsupported MT5 interval '{request.interval}'")
         values=[]
+        instrument = self.symbols.resolve(
+            request.provider_key, request.provider_symbol, request.canonical_instrument
+        ).canonical_instrument
         for item in request.candles:
             try:
-                instrument = self.symbols.resolve(
-                    request.provider_key, request.provider_symbol, request.canonical_instrument
-                ).canonical_instrument
-                values.append(Candle(request.provider_key, instrument, interval, item.time_utc, item.open, item.high, item.low, item.close, item.tick_volume or 0, Decimal(item.tick_volume or 0), True))
-            except ValueError: continue
-        return self.store.upsert_candles(values)
+                values.append(Candle(
+                    request.provider_key, instrument, "1m", ensure_server_local(item.time_utc),
+                    item.open, item.high, item.low, item.close,
+                    item.tick_volume or 0, Decimal(item.tick_volume or 0), True,
+                ))
+            except ValueError:
+                continue
+        written = self.store.upsert_candles(values)
+        if values:
+            from .aggregation import CANONICAL_DERIVED_TIMEFRAMES, CandleAggregator
+            aggregator = CandleAggregator(self.store)
+            for timeframe in CANONICAL_DERIVED_TIMEFRAMES:
+                aggregator.aggregate(instrument, timeframe, request.provider_key)
+        return written
 
     def _consume(self) -> None:
         while True:
@@ -267,7 +273,7 @@ class Mt5BridgeService:
                         ).canonical_instrument
                         # Candle boundaries must use the MT5 source timestamp, never HTTP
                         # receipt time or local server processing time.
-                        received_time = item.received_utc or datetime.now(UTC)
+                        received_time = item.received_utc or server_now()
                         ticks.append(Tick(
                             request.provider_key, instrument,
                             self._normalize_live_timestamp(item.time_utc, received_time),
@@ -281,7 +287,7 @@ class Mt5BridgeService:
                     if self._ingest_observation(request.terminal_instance_id, tick):
                         processed += 1
                 self.stats.processed_ticks += processed
-                self.stats.last_batch_utc = datetime.now(UTC).isoformat()
+                self.stats.last_batch_utc = server_now().isoformat()
                 self.stats.last_error = None
             except Exception as exc:
                 self.stats.last_error = str(exc)

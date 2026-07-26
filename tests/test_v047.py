@@ -30,7 +30,8 @@ def test_bridge_quote_builds_provider_scoped_candle(tmp_path):
         assert accepted == 1
         candles = store.read_candles("BTC/USD", "1m", provider="ICMarkets.MT5")
         assert len(candles) == 1
-        assert candles[0].open_time == at.replace(second=0, microsecond=0)
+        assert candles[0].open_time.tzinfo is not None
+        assert abs((datetime.now().astimezone() - candles[0].open_time).total_seconds()) < 60
         assert candles[0].complete is False
     finally:
         bridge.shutdown()

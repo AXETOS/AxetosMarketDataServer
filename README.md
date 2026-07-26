@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.44.0
+## Version 0.45.0
 
-Version 0.44.0 makes the Market Data Server the sole candle producer for Trading Platform consumers. Every accepted authoritative tick now persists the current incomplete one-minute candle and refreshes the server-owned canonical 5m, 15m, 30m, 1h, 4h, and 1d candles. The candle API therefore returns both completed history and the current server-built display candle without requiring any client-side OHLC construction or aggregation. Completed and incomplete state remains explicit through the existing `complete` field, and genuine gaps remain absent rather than being synthesized by consumers.
+Version 0.45.0 makes the Market Data Server the sole candle producer for Trading Platform consumers. Every accepted authoritative tick now persists the current incomplete one-minute candle and refreshes the server-owned canonical 5m, 15m, 30m, 1h, 4h, and 1d candles. The candle API therefore returns both completed history and the current server-built display candle without requiring any client-side OHLC construction or aggregation. Completed and incomplete state remains explicit through the existing `complete` field, and genuine gaps remain absent rather than being synthesized by consumers.
 
 ## Version 0.43.0
 
@@ -580,3 +580,10 @@ The MT5 ingestion endpoints use only `AXETOS_BRIDGE_TOKEN`. A management token c
 Version 0.20.0 adds a dedicated MT5 symbol-management workflow. The management UI can discover symbols from the configured terminal, show broker descriptions, propose canonical Axetos instruments, and persist each mapping as Confirmed, Needs review, or Ignored. Provider symbols remain separate from canonical instruments: MT5 receives broker names such as `EURUSD.pro`, while storage, routing, candles, APIs, and streams use `EUR/USD`.
 
 Automatic guesses are intentionally disabled until reviewed. This prevents ambiguous broker CFDs from entering the authoritative market-data catalog.
+
+### v0.45.0 Trading Platform read contract
+
+- Resolves the canonical provider server-side when candle or quote requests omit a provider.
+- Adds the canonical `/api/quotes/{instrument}` read endpoint.
+- Keeps compatibility read endpoints for older Trading Platform clients while `/api/candles` remains authoritative.
+- Candle and quote responses identify the active provider and never require client-side candle generation.

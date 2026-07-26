@@ -32,6 +32,6 @@ def test_no_feed_reports_are_initializing() -> None:
 
 def test_v038_release_metadata() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert __version__ == "0.44.0"
-    assert 'version = "0.44.0"' in (root / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.44.0" in (root / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.45.0"
+    assert 'version = "0.45.0"' in (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.45.0" in (root / "README.md").read_text(encoding="utf-8")

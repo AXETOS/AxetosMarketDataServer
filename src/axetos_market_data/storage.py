@@ -521,6 +521,16 @@ class MarketDataStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def preferred_candle_provider(self, instrument: str, timeframe: str) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT provider, MAX(open_time_utc) AS newest
+                   FROM candles WHERE instrument=? AND timeframe=?
+                   GROUP BY provider ORDER BY newest DESC, provider ASC LIMIT 1""",
+                (instrument, timeframe),
+            ).fetchone()
+        return None if row is None else str(row["provider"])
+
     def read_candles(
         self,
         instrument: str,
@@ -847,6 +857,19 @@ class MarketDataStore:
     def upsert_bridge_quote(self, provider: str, terminal: str, value: dict[str, object], received: datetime) -> None:
         with self.connect() as c:
             c.execute("""INSERT INTO mt5_bridge_quotes VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider_key,terminal_instance_id,provider_symbol) DO UPDATE SET canonical_instrument=excluded.canonical_instrument,source_time_utc=excluded.source_time_utc,received_utc=excluded.received_utc,bid=excluded.bid,ask=excluded.ask,last=excluded.last,volume=excluded.volume""",(provider,terminal,value['provider_symbol'],value['canonical_instrument'],_iso(value['time_utc']),_iso(received),str(value['bid']),str(value['ask']),None if value.get('last') is None else str(value['last']),None if value.get('volume') is None else str(value['volume'])))
+
+    def latest_bridge_quote(self, instrument: str, provider: str | None = None) -> dict[str, object] | None:
+        where = "canonical_instrument=?"
+        parameters: list[object] = [instrument]
+        if provider is not None:
+            where += " AND provider_key=?"
+            parameters.append(provider)
+        with self.connect() as c:
+            row = c.execute(
+                f"SELECT * FROM mt5_bridge_quotes WHERE {where} ORDER BY received_utc DESC LIMIT 1",
+                parameters,
+            ).fetchone()
+        return None if row is None else dict(row)
 
     def bridge_status(self) -> dict[str, object]:
         with self.connect() as c:

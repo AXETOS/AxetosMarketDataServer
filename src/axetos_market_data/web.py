@@ -21,6 +21,7 @@ from .providers.mt5 import MetaTrader5TickProvider
 from .providers.yahoo import YahooHistoricalProvider
 from .calendar import MarketCalendar
 from datetime import datetime, UTC, timedelta
+from decimal import Decimal
 from .storage import MarketDataStore
 from .diagnostics import build_health, build_liveness, build_metrics, build_readiness, prometheus_text
 from .housekeeping import HousekeepingService, RetentionPolicy
@@ -917,10 +918,24 @@ def create_app(
     ) -> dict[str, object]:
         if from_utc is not None and to_utc is not None and from_utc > to_utc:
             raise HTTPException(400, "from_utc cannot be later than to_utc")
-        values = store.read_candles(instrument, timeframe, limit, provider, from_utc, to_utc)
+        active_provider = provider
+        if active_provider is None:
+            configs = [
+                {"provider_key": p.provider_key, "enabled": p.enabled, "priority": p.priority}
+                for p in config_store.read_all()
+            ]
+            route = choose_canonical_source(instrument, configs, store.list_symbol_policies(instrument=instrument))
+            preferred = route.get("preferred")
+            if isinstance(preferred, dict):
+                active_provider = str(preferred["provider_key"])
+            if active_provider is None:
+                active_provider = store.preferred_candle_provider(instrument, timeframe)
+        values = store.read_candles(instrument, timeframe, limit, active_provider, from_utc, to_utc)
         return {
             "instrument": instrument,
             "timeframe": timeframe,
+            "source": "Axetos Market Data Server",
+            "active_provider": active_provider,
             "authority": "Axetos Market Data Server",
             "candle_generation": "server",
             "count": len(values),
@@ -937,6 +952,70 @@ def create_app(
                     "complete": c.complete,
                 }
                 for c in values
+            ],
+        }
+
+    @app.get("/api/quotes/{instrument:path}")
+    def latest_quote(instrument: str, provider: str | None = None) -> dict[str, object]:
+        active_provider = provider
+        if active_provider is None:
+            configs = [
+                {"provider_key": p.provider_key, "enabled": p.enabled, "priority": p.priority}
+                for p in config_store.read_all()
+            ]
+            route = choose_canonical_source(instrument, configs, store.list_symbol_policies(instrument=instrument))
+            preferred = route.get("preferred")
+            if isinstance(preferred, dict):
+                active_provider = str(preferred["provider_key"])
+        value = store.latest_bridge_quote(instrument, active_provider)
+        if value is None:
+            raise HTTPException(404, "No quote is available for the requested instrument")
+        bid = Decimal(str(value["bid"]))
+        ask = Decimal(str(value["ask"]))
+        return {
+            "instrument": instrument,
+            "provider": value["provider_key"],
+            "time_utc": value["source_time_utc"],
+            "received_utc": value["received_utc"],
+            "bid": str(bid),
+            "ask": str(ask),
+            "mid": str((bid + ask) / Decimal("2")),
+            "source": value["provider_key"],
+            "delayed": False,
+        }
+
+    @app.get("/api/market-data/quote/{instrument:path}")
+    def compatibility_quote(instrument: str, provider: str | None = None) -> dict[str, object]:
+        return latest_quote(instrument, provider)
+
+    @app.get("/api/market-data/candles")
+    def compatibility_candles(
+        instrument: str,
+        interval: str = "1m",
+        limit: int = Query(default=200, ge=1, le=5000),
+        provider: str | None = None,
+        from_: datetime | None = Query(default=None, alias="from"),
+        to: datetime | None = None,
+        trace: bool = False,
+    ) -> dict[str, object]:
+        payload = candles(instrument, interval, limit, provider, from_, to)
+        return {
+            "source": payload["source"],
+            "active_provider": payload["active_provider"],
+            "interval": interval,
+            "authority": payload["authority"],
+            "candle_generation": payload["candle_generation"],
+            "candles": [
+                {
+                    "time_utc": item["open_time_utc"],
+                    "open": item["open"],
+                    "high": item["high"],
+                    "low": item["low"],
+                    "close": item["close"],
+                    "is_partial": not item["complete"],
+                    "is_synthetic_missing": False,
+                }
+                for item in payload["candles"]
             ],
         }
 

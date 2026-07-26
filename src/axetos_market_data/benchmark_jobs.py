@@ -50,6 +50,8 @@ class BenchmarkJobManager:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._job: BenchmarkJob | None = None
+        self._completion = threading.Event()
+        self._thread: threading.Thread | None = None
 
     def start(self, ticks: int, instruments: int, batch_sizes: Iterable[int]) -> dict[str, object]:
         sizes = list(dict.fromkeys(int(value) for value in batch_sizes))
@@ -60,7 +62,9 @@ class BenchmarkJobManager:
                 raise RuntimeError("A benchmark is already running")
             job = BenchmarkJob(uuid.uuid4().hex, ticks, instruments, sizes)
             self._job = job
+            self._completion.clear()
             thread = threading.Thread(target=self._run, args=(job,), name="axetos-benchmark", daemon=True)
+            self._thread = thread
             thread.start()
             return job.to_dict()
 
@@ -69,6 +73,19 @@ class BenchmarkJobManager:
             if self._job is None:
                 return {"status": "idle", "job": None}
             return {"status": self._job.status, "job": self._job.to_dict()}
+
+    def wait_for_completion(self, timeout: float | None = None) -> dict[str, object]:
+        """Wait for the active benchmark to reach a terminal state.
+
+        This avoids timing-sensitive polling in callers and release tests while
+        leaving the HTTP API asynchronous.
+        """
+        with self._lock:
+            if self._job is None:
+                return {"status": "idle", "job": None}
+            completion = self._completion
+        completion.wait(timeout)
+        return self.status()
 
     def _run(self, job: BenchmarkJob) -> None:
         with self._lock:
@@ -98,3 +115,4 @@ class BenchmarkJobManager:
             with self._lock:
                 job.current_batch_size = None
                 job.completed_utc = datetime.now(UTC).isoformat()
+                self._completion.set()

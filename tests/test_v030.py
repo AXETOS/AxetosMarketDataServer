@@ -18,14 +18,8 @@ def test_benchmark_generation_is_minute_aligned_and_repeatable(tmp_path):
 def test_benchmark_job_manager_runs_comparison():
     manager = BenchmarkJobManager()
     manager.start(1000, 5, [100, 250])
-    import time
-    deadline = time.time() + 10
-    while time.time() < deadline:
-        status = manager.status()
-        if status["status"] in {"completed", "failed"}:
-            break
-        time.sleep(0.05)
-    job = manager.status()["job"]
+    status = manager.wait_for_completion(timeout=60)
+    job = status["job"]
     assert job["status"] == "completed"
     assert len(job["results"]) == 2
     assert job["best_batch_size"] in {100, 250}
@@ -41,3 +35,4 @@ def test_management_ui_and_api_expose_benchmark(tmp_path):
         assert response.status_code == 200
         assert response.json()["status"] in {"queued", "running"}
         assert client.get("/api/benchmarks/status").status_code == 200
+        assert app.state.benchmark_jobs.wait_for_completion(timeout=60)["status"] == "completed"

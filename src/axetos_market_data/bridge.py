@@ -4,7 +4,7 @@ import queue
 import threading
 from threading import RLock
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Callable, Iterable
 
@@ -191,13 +191,15 @@ class Mt5BridgeService:
             instrument = self.symbols.resolve(
                 request.provider_key, item.provider_symbol, item.canonical_instrument
             ).canonical_instrument
+            source_time = self._normalize_live_timestamp(item.time_utc, now)
             value = item.model_dump(by_alias=False)
             value["canonical_instrument"] = instrument
+            value["time_utc"] = source_time
             self.store.upsert_bridge_quote(request.provider_key, request.terminal_instance_id, value, now)
             tick = Tick(
                 request.provider_key,
                 instrument,
-                item.time_utc,
+                source_time,
                 item.bid,
                 item.ask,
                 item.volume,
@@ -205,6 +207,21 @@ class Mt5BridgeService:
             if self._ingest_observation(request.terminal_instance_id, tick):
                 accepted += 1
         return accepted
+
+
+    @staticmethod
+    def _normalize_live_timestamp(source_time: datetime, received_time: datetime) -> datetime:
+        """Keep live candle buckets in UTC even when an MT5 bridge labels broker time as UTC.
+
+        Historical candle backfill remains source-timestamp based. For live quotes/ticks, a
+        large clock difference means the timestamp cannot safely be used for current candle
+        boundaries or client time-window queries, so server receipt UTC is authoritative.
+        """
+        source_utc = source_time.astimezone(UTC)
+        received_utc = received_time.astimezone(UTC)
+        if abs(source_utc - received_utc) > timedelta(minutes=60):
+            return received_utc
+        return source_utc
 
     def _ingest_observation(self, terminal_instance_id: str, tick: Tick) -> bool:
         key = (tick.provider, tick.instrument)
@@ -250,8 +267,10 @@ class Mt5BridgeService:
                         ).canonical_instrument
                         # Candle boundaries must use the MT5 source timestamp, never HTTP
                         # receipt time or local server processing time.
+                        received_time = item.received_utc or datetime.now(UTC)
                         ticks.append(Tick(
-                            request.provider_key, instrument, item.time_utc,
+                            request.provider_key, instrument,
+                            self._normalize_live_timestamp(item.time_utc, received_time),
                             item.bid, item.ask, item.volume,
                         ))
                     except ValueError:

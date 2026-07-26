@@ -964,6 +964,10 @@ def create_app(
             ],
         }
 
+    @app.get("/api/quote")
+    def latest_quote_query(instrument: str, provider: str | None = None) -> dict[str, object]:
+        return latest_quote(instrument, provider)
+
     @app.get("/api/quotes/{instrument:path}")
     def latest_quote(instrument: str, provider: str | None = None) -> dict[str, object]:
         active_provider = provider

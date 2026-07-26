@@ -4,6 +4,10 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.48.0
+
+Version 0.48.0 fixes live MT5 candle visibility for clients. Live bridge quote and tick timestamps are normalized to server receipt UTC when the bridge timestamp differs by more than five minutes, preventing broker-local timestamps mislabeled as UTC from placing current candles outside client query windows. A query-based `GET /api/quote?instrument=...` endpoint is also available so canonical symbols containing `/` do not depend on path encoding. Historical backfill timestamps remain unchanged.
+
 ## Version 0.47.1
 
 Version 0.47.1 fixes MT5 bridge ingestion visibility and stale-heartbeat startup handling. Persisted heartbeats from an earlier server run no longer make a provider appear connected indefinitely or suppress a live ingestion path. The server gives each MQL bridge a reconnect window and only treats a heartbeat as live while it is recent. Bridge heartbeats and provider-scoped quote/tick observations now update the corresponding provider runtime counters, last-observation timestamp, account state, and feed-state engine while the same observations continue to drive server-owned candles.

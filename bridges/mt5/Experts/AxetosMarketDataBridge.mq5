@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.20"
+#property version   "1.21"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -44,7 +44,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.20: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.21: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -759,8 +759,8 @@ void RefreshRepairRequest()
                         "&errorCode=" + IntegerToString(copy_error) +
                         "&requestId=" + request_id;
    PostJson(result_path, "{}");
-   if(completed && logged_progress)
-      PrintFormat("Axetos MT5 Bridge: backfill batch complete for %s %s; bars=%d.", resolved, interval, copied);
+   if(completed)
+      PrintFormat("Axetos MT5 Bridge: backfill batch stored for %s %s; bars=%d; server acknowledged. Next range will be requested on the next poll.", resolved, interval, copied);
    else if(!completed)
       PrintFormat("Axetos MT5 Bridge: backfill batch failed for %s %s; error=%d.", resolved, interval, copy_error);
 }

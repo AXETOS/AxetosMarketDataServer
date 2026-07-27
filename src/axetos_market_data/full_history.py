@@ -30,6 +30,9 @@ class InstrumentProgress:
     current_end: datetime | None = None
     current_request_id: str | None = None
     request_kind: str | None = None
+    dispatched_at: datetime | None = None
+    dispatch_attempts: int = 0
+    last_result: str | None = None
     available_count: int = 0
     local_count: int = 0
     earliest_available: datetime | None = None
@@ -72,12 +75,14 @@ class FullHistoryBackfillManager:
         on_instrument_completed: Callable[[str, str], None] | None = None,
         pressure_probe: Callable[[], bool] | None = None,
         now_factory: Callable[[], datetime] = server_now,
+        request_lease: timedelta = timedelta(seconds=30),
     ) -> None:
         self._local_count = local_count
         self._lock = threading.RLock()
         self._on_instrument_completed = on_instrument_completed
         self._pressure_probe = pressure_probe
         self._now_factory = now_factory
+        self._request_lease = request_lease
         self._jobs: dict[str, FullHistoryJob] = {}
         self._provider_job: dict[str, str] = {}
         self._tiers_by_job: dict[str, list[HistoryTier]] = {}
@@ -125,9 +130,13 @@ class FullHistoryBackfillManager:
                 return ""
             item = job.instruments[job.active_index]
             if item.current_request_id:
-                # Availability probes are read-only MT5 queries and must never be
-                # blocked by SQLite/live-ingestion pressure. Only actual historical
-                # downloads are throttled because they result in database writes.
+                # Exactly one command is delivered per provider at a time. Once a
+                # command has been handed to MT5, polling returns no work until the
+                # result is acknowledged. A bounded lease permits redelivery only
+                # when the bridge disappeared before reporting a result.
+                now = self._now_factory()
+                if item.dispatched_at is not None and now - item.dispatched_at < self._request_lease:
+                    return ""
                 if (
                     item.request_kind == "backfill"
                     and self._pressure_probe is not None
@@ -135,6 +144,9 @@ class FullHistoryBackfillManager:
                 ):
                     item.status = "throttled"
                     return ""
+                item.dispatched_at = now
+                item.dispatch_attempts += 1
+                item.status = "probing" if item.request_kind == "availability" else "importing"
                 return self._format_request(item)
             self._ensure_tier(job, item)
             if item.status == "completed":
@@ -143,6 +155,8 @@ class FullHistoryBackfillManager:
             item.current_request_id = uuid.uuid4().hex
             item.request_kind = "availability"
             item.status = "probing"
+            item.dispatched_at = self._now_factory()
+            item.dispatch_attempts = 1
             return self._format_request(item)
 
     def availability_result(
@@ -169,6 +183,8 @@ class FullHistoryBackfillManager:
             )
             item.current_request_id = None
             item.request_kind = None
+            item.dispatched_at = None
+            item.last_result = f"availability confirmed: provider={count}, local={item.local_count}"
             if count <= 0 or earliest is None or latest is None:
                 item.ranges_unavailable += 1
                 self._advance_range(job, item)
@@ -180,6 +196,8 @@ class FullHistoryBackfillManager:
             item.current_request_id = uuid.uuid4().hex
             item.request_kind = "backfill"
             item.status = "importing"
+            item.dispatched_at = None
+            item.dispatch_attempts = 0
 
     def batch_result(
         self,
@@ -197,10 +215,12 @@ class FullHistoryBackfillManager:
             if item is None or job is None:
                 return
             item.last_error_code = error_code
+            item.dispatched_at = None
             if unavailable:
                 item.ranges_unavailable += 1
                 item.retry_count = 0
                 item.error = f"Confirmed history became unavailable (MT5 error {error_code})"
+                item.last_result = item.error
                 self._advance_range(job, item)
                 return
             if not completed:
@@ -209,6 +229,7 @@ class FullHistoryBackfillManager:
                 item.retry_count += 1
                 item.status = "retrying"
                 item.error = f"Transient MT5 history failure; retry {item.retry_count}/3"
+                item.last_result = item.error
                 if item.retry_count >= 3:
                     item.ranges_unavailable += 1
                     item.retry_count = 0
@@ -219,6 +240,7 @@ class FullHistoryBackfillManager:
             item.batches_completed += 1
             item.bars_received += max(0, bars_received)
             item.bars_inserted += max(0, bars_inserted)
+            item.last_result = f"batch stored: received={max(0, bars_received)}, inserted={max(0, bars_inserted)}"
             self._advance_range(job, item)
 
     def _ensure_tier(self, job: FullHistoryJob, item: InstrumentProgress) -> None:
@@ -244,6 +266,8 @@ class FullHistoryBackfillManager:
         item.cursor_start = item.current_end + self._step(item.timeframe)
         item.current_request_id = None
         item.request_kind = None
+        item.dispatched_at = None
+        item.dispatch_attempts = 0
         item.available_count = 0
         item.local_count = 0
         if item.cursor_start > item.tier_end:
@@ -330,6 +354,11 @@ class FullHistoryBackfillManager:
                     "error": item.error,
                     "retry_count": item.retry_count,
                     "last_error_code": item.last_error_code,
+                    "request_kind": item.request_kind,
+                    "request_id": item.current_request_id,
+                    "dispatched_at": item.dispatched_at.isoformat() if item.dispatched_at else None,
+                    "dispatch_attempts": item.dispatch_attempts,
+                    "last_result": item.last_result,
                 }
                 for item in job.instruments
             ],

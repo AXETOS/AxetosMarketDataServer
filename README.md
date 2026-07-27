@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.60.2
+## Version 0.60.3
 
-Version 0.60.2 makes MT5 history availability probing asynchronous and observable. CopyRates can initially return -1 while MT5 downloads or builds the requested series; bridge v1.20 now keeps the same server request pending, retries it on later timer cycles, reports synchronization progress at a controlled rate, and only reports zero availability after bounded retries. Successful probes report the exact range and available candle count in the MT5 Journal.
+Version 0.60.3 makes full-history backfill strictly sequential per provider. The server delivers one availability or download command, waits for the matching acknowledgement, and only then advances to the next range. Polling cannot receive the same command repeatedly during its 30-second delivery lease; redelivery occurs only after the lease expires. MT5 bridge v1.21 always logs successful server storage acknowledgement for each downloaded batch.
 
 Version 0.60.0 replaces the all-M1 full-history import with an availability-aware tiered background backfill. The server probes the exact MT5 symbol, timeframe, and date range before every download, compares the provider candle count with local coverage, and requests a batch only when candles are confirmed available and missing locally. Recent history uses M1, medium history uses H1, and deep history uses D1. Existing source candles are inserted with `INSERT OR IGNORE` and are never overwritten. MT5 bridge v1.18 supports exact-range availability probes and M1/H1/D1 background batches while live ticks remain the highest-priority workload.
 

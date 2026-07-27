@@ -11,7 +11,7 @@ def test_full_history_allows_read_only_probe_under_live_pressure():
         now_factory=lambda: datetime(2026, 7, 27, tzinfo=UTC),
     )
     manager.start("ICMarkets.MT5", [("EURUSD", "EUR/USD")])
-    assert manager.next_request("ICMarkets.MT5").startswith("AVAILABILITY|EURUSD|1m|")
+    assert manager.next_request("ICMarkets.MT5").startswith("DISCOVER|EURUSD|1m|")
 
 
 def test_release_keeps_low_priority_history_writes_and_live_queue_reservation():

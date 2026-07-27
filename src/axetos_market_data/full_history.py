@@ -54,6 +54,10 @@ class InstrumentProgress:
     fine_end: datetime | None = None
     coarse_ranges_probed: int = 0
     fine_ranges_probed: int = 0
+    discovery_index: int = 0
+    discovery_complete: bool = False
+    discovery_boundaries: dict[str, datetime | None] = field(default_factory=dict)
+    discovery_counts: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -98,25 +102,42 @@ class FullHistoryBackfillManager:
         with self._lock:
             self._pressure_probe = pressure_probe
 
-    def _build_tiers(self) -> list[HistoryTier]:
+    def _build_tiers(self, item: InstrumentProgress | None = None) -> list[HistoryTier]:
+        """Build storage tiers from boundaries discovered directly from MT5.
+
+        Discovery asks MT5 once per timeframe for the complete ten-year window. The
+        returned earliest candle is the authoritative provider boundary. Storage
+        ranges are then constructed without probing any period older than that
+        boundary and without overlapping finer data with coarser tiers.
+        """
+        if item is None or not item.discovery_complete:
+            return []
         now = self._now_factory().replace(second=0, microsecond=0)
-        recent_start = now - timedelta(days=30)
-        hourly_start = now - timedelta(days=365 * 3)
-        # D1 availability is cheap to probe deeply and provides honest long-range
-        # coverage without millions of M1 rows.
-        deep_start = datetime(1970, 1, 1, tzinfo=now.tzinfo)
-        hourly_end = recent_start - timedelta(hours=1)
-        daily_end = hourly_start - timedelta(days=1)
-        return [
-            # Every tier starts with one broad provider-availability probe across
-            # the complete tier. Only a tier that actually contains provider data
-            # is subdivided into its normal storage batches. This prevents an
-            # unavailable H1 or D1 tier from being crawled month by month/year by
-            # year merely to rediscover the same absence repeatedly.
-            HistoryTier("1m", recent_start, now, timedelta(days=1), now - recent_start + timedelta(minutes=1)),
-            HistoryTier("1h", hourly_start, hourly_end, timedelta(days=30), hourly_end - hourly_start + timedelta(hours=1)),
-            HistoryTier("1d", deep_start, daily_end, timedelta(days=365), daily_end - deep_start + timedelta(days=1)),
-        ]
+        m1 = item.discovery_boundaries.get("1m")
+        h1 = item.discovery_boundaries.get("1h")
+        d1 = item.discovery_boundaries.get("1d")
+        tiers: list[HistoryTier] = []
+        if m1 is not None and m1 <= now:
+            tiers.append(HistoryTier("1m", m1, now, timedelta(days=1)))
+        h1_end = min(now, m1 - timedelta(hours=1)) if m1 is not None else now
+        if h1 is not None and h1 <= h1_end:
+            tiers.append(HistoryTier("1h", h1, h1_end, timedelta(days=30)))
+        coarse_boundary = h1 if h1 is not None else m1
+        d1_end = min(now, coarse_boundary - timedelta(days=1)) if coarse_boundary is not None else now
+        if d1 is not None and d1 <= d1_end:
+            tiers.append(HistoryTier("1d", d1, d1_end, timedelta(days=365)))
+        return tiers
+
+    def _configure_discovery(self, item: InstrumentProgress) -> None:
+        timeframe = ("1m", "1h", "1d")[item.discovery_index]
+        now = self._now_factory().replace(second=0, microsecond=0)
+        item.timeframe = timeframe
+        item.tier_start = now - timedelta(days=365 * 10)
+        item.tier_end = now
+        item.cursor_start = item.tier_start
+        item.current_end = item.tier_end
+        item.scan_phase = "discovery"
+        item.status = "queued"
 
     def start(self, provider_key: str, symbols: list[tuple[str, str]]) -> dict[str, object]:
         with self._lock:
@@ -131,7 +152,7 @@ class FullHistoryBackfillManager:
             )
             self._jobs[job.job_id] = job
             self._provider_job[provider_key] = job.job_id
-            self._tiers_by_job[job.job_id] = self._build_tiers()
+            self._tiers_by_job[job.job_id] = []
             return self._view(job)
 
     def next_request(self, provider_key: str) -> str:
@@ -153,14 +174,14 @@ class FullHistoryBackfillManager:
                     return ""
                 item.dispatched_at = now
                 item.dispatch_attempts += 1
-                item.status = "probing" if item.request_kind == "availability" else "importing"
+                item.status = "probing" if item.request_kind in {"availability", "discovery"} else "importing"
                 return self._format_request(item)
             self._ensure_tier(job, item)
             if item.status == "completed":
                 self._advance_completed(job)
                 return self.next_request(provider_key) if job.status == "running" else ""
             item.current_request_id = uuid.uuid4().hex
-            item.request_kind = "availability"
+            item.request_kind = "discovery" if item.scan_phase == "discovery" else "availability"
             item.status = "probing"
             item.dispatched_at = self._now_factory()
             item.dispatch_attempts = 1
@@ -198,6 +219,34 @@ class FullHistoryBackfillManager:
             item.last_result = (
                 f"{item.scan_phase} availability confirmed: provider={count}, local={item.local_count}"
             )
+
+            if item.scan_phase == "discovery":
+                boundary = earliest if count > 0 and earliest is not None else None
+                item.discovery_boundaries[item.timeframe] = boundary
+                item.discovery_counts[item.timeframe] = max(0, count)
+                if boundary is None:
+                    item.ranges_unavailable += 1
+                item.last_result = (
+                    f"discovered {item.timeframe} boundary: "
+                    f"{boundary.isoformat() if boundary else 'unavailable'}; bars={max(0, count)}"
+                )
+                item.discovery_index += 1
+                item.cursor_start = None
+                item.current_end = None
+                item.timeframe = None
+                item.tier_start = None
+                item.tier_end = None
+                if item.discovery_index < 3:
+                    self._configure_discovery(item)
+                else:
+                    item.discovery_complete = True
+                    item.tier_index = 0
+                    item.scan_phase = "fine"
+                    self._tiers_by_job[job.job_id] = self._build_tiers(item)
+                    self._ensure_tier(job, item)
+                if boundary is None:
+                    return f"UNAVAILABLE|{max(0, count)}|0"
+                return f"DISCOVERED|{max(0, count)}|{boundary.isoformat()}"
 
             if item.scan_phase == "coarse":
                 local_count = item.local_count
@@ -293,6 +342,10 @@ class FullHistoryBackfillManager:
             return f"STORED|{received}|{inserted}|{skipped}"
 
     def _ensure_tier(self, job: FullHistoryJob, item: InstrumentProgress) -> None:
+        if not item.discovery_complete:
+            if item.timeframe is None:
+                self._configure_discovery(item)
+            return
         tiers = self._tiers_by_job[job.job_id]
         while item.tier_index < len(tiers):
             tier = tiers[item.tier_index]
@@ -302,18 +355,10 @@ class FullHistoryBackfillManager:
                 item.tier_end = tier.end
                 if item.cursor_start is None:
                     item.cursor_start = tier.start
-                    if tier.availability_span is not None:
-                        item.scan_phase = "coarse"
-                        item.coarse_start = tier.start
-                        item.coarse_end = min(
-                            tier.end, tier.start + tier.availability_span - self._step(tier.timeframe)
-                        )
-                        item.current_end = item.coarse_end
-                    else:
-                        item.scan_phase = "fine"
-                        item.current_end = min(
-                            tier.end, item.cursor_start + tier.batch_span - self._step(tier.timeframe)
-                        )
+                    item.scan_phase = "fine"
+                    item.current_end = min(
+                        tier.end, item.cursor_start + tier.batch_span - self._step(tier.timeframe)
+                    )
                 item.status = "queued"
                 return
             item.tier_index += 1
@@ -393,7 +438,7 @@ class FullHistoryBackfillManager:
 
     def _format_request(self, item: InstrumentProgress) -> str:
         assert item.current_request_id and item.timeframe and item.cursor_start and item.current_end
-        command = "AVAILABILITY" if item.request_kind == "availability" else "BACKFILL"
+        command = "DISCOVER" if item.request_kind == "discovery" else ("AVAILABILITY" if item.request_kind == "availability" else "BACKFILL")
         return "|".join((
             command,
             item.provider_symbol,
@@ -468,6 +513,13 @@ class FullHistoryBackfillManager:
                     "fine_end": item.fine_end.isoformat() if item.fine_end else None,
                     "coarse_ranges_probed": item.coarse_ranges_probed,
                     "fine_ranges_probed": item.fine_ranges_probed,
+                    "discovery_index": item.discovery_index,
+                    "discovery_complete": item.discovery_complete,
+                    "discovery_boundaries": {
+                        key: value.isoformat() if value else None
+                        for key, value in item.discovery_boundaries.items()
+                    },
+                    "discovery_counts": dict(item.discovery_counts),
                 }
                 for item in job.instruments
             ],

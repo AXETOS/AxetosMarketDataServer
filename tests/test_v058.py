@@ -14,7 +14,7 @@ def test_zero_availability_advances_without_download():
     first = manager.next_request("P")
     manager.availability_result("P", first.split("|")[-1], earliest=None, latest=None, count=0)
     second = manager.next_request("P")
-    assert second.startswith("AVAILABILITY|") and second != first
+    assert second.startswith("DISCOVER|") and second != first
     status = manager.status("P")["jobs"][0]["instruments"][0]
     assert status["ranges_unavailable"] == 1
 
@@ -35,7 +35,7 @@ def test_transient_download_failure_is_bounded():
 
 def test_bridge_probes_exact_symbol_timeframe_range():
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "1.25"' in source
+    assert '#property version   "1.26"' in source
     assert "ProbeHistoryRange" in source
     assert "candleCount=" in source
     assert "latestUtc=" in source

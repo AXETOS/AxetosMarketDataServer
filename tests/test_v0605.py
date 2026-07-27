@@ -17,11 +17,12 @@ def test_one_missing_candle_dispatches_backfill_and_waits_for_storage_ack() -> N
     )
     manager.start("ICMarkets.MT5", [("SOLUSD", "SOL/USD")])
 
-    coarse = manager.next_request("ICMarkets.MT5").split("|")
-    coarse_decision = manager.availability_result(
-        "ICMarkets.MT5", coarse[5], earliest=now - timedelta(days=30), latest=now, count=43000
-    )
-    assert coarse_decision == "DRILLDOWN|43000|1400"
+    for timeframe, days, count in (("1m", 30, 43000), ("1h", 700, 15000), ("1d", 2500, 2500)):
+        discovery = manager.next_request("ICMarkets.MT5").split("|")
+        assert discovery[:3] == ["DISCOVER", "SOLUSD", timeframe]
+        manager.availability_result(
+            "ICMarkets.MT5", discovery[5], earliest=now - timedelta(days=days), latest=now, count=count
+        )
 
     availability = manager.next_request("ICMarkets.MT5")
     availability_parts = availability.split("|")
@@ -64,7 +65,7 @@ def test_bridge_and_server_expose_explicit_storage_handshake() -> None:
     web = Path("src/axetos_market_data/web.py").read_text(encoding="utf-8")
     manager = Path("src/axetos_market_data/full_history.py").read_text(encoding="utf-8")
 
-    assert '#property version   "1.25"' in bridge
+    assert '#property version   "1.26"' in bridge
     assert "download started" in bridge
     assert "CopyRates returned" in bridge
     assert "server stored %d and skipped %d" in bridge

@@ -7,6 +7,13 @@ from axetos_market_data.full_history import FullHistoryBackfillManager
 from axetos_market_data.storage import MarketDataStore
 
 
+def _discover(manager, provider, now):
+    for timeframe, days, count in (("1m", 30, 43000), ("1h", 700, 15000), ("1d", 2500, 2500)):
+        parts = manager.next_request(provider).split("|")
+        assert parts[:3] == ["DISCOVER", "EURUSD", timeframe]
+        manager.availability_result(provider, parts[5], earliest=now - __import__("datetime").timedelta(days=days), latest=now, count=count)
+
+
 def test_tiered_history_probes_exact_range_before_downloading(tmp_path):
     store = MarketDataStore(tmp_path / "market.sqlite")
     store.initialize()
@@ -16,39 +23,24 @@ def test_tiered_history_probes_exact_range_before_downloading(tmp_path):
         now_factory=lambda: now,
     )
     manager.start("ICMarkets.MT5", [("EURUSD", "EUR/USD")])
-    probe = manager.next_request("ICMarkets.MT5")
-    parts = probe.split("|")
-    assert parts[:3] == ["AVAILABILITY", "EURUSD", "1m"]
-    request_id = parts[-1]
+    _discover(manager, "ICMarkets.MT5", now)
+    probe = manager.next_request("ICMarkets.MT5").split("|")
+    assert probe[:3] == ["AVAILABILITY", "EURUSD", "1m"]
     decision = manager.availability_result(
-        "ICMarkets.MT5", request_id,
-        earliest=datetime.fromisoformat(parts[3]), latest=datetime.fromisoformat(parts[4]), count=43200,
+        "ICMarkets.MT5", probe[5], earliest=datetime.fromisoformat(probe[3]), latest=datetime.fromisoformat(probe[4]), count=1440,
     )
-    assert decision.startswith("DRILLDOWN|")
-    fine_probe = manager.next_request("ICMarkets.MT5").split("|")
-    fine_decision = manager.availability_result(
-        "ICMarkets.MT5", fine_probe[5],
-        earliest=datetime.fromisoformat(fine_probe[3]), latest=datetime.fromisoformat(fine_probe[4]), count=1440,
-    )
-    assert fine_decision == "BACKFILL|1440|0"
-    download = manager.next_request("ICMarkets.MT5")
-    assert download.split("|")[:3] == ["BACKFILL", "EURUSD", "1m"]
+    assert decision == "BACKFILL|1440|0"
+    assert manager.next_request("ICMarkets.MT5").split("|")[:3] == ["BACKFILL", "EURUSD", "1m"]
 
 
 def test_matching_local_count_skips_download(tmp_path):
-    store = MarketDataStore(tmp_path / "market.sqlite")
-    store.initialize()
     now = datetime(2026, 7, 27, tzinfo=UTC)
-    manager = FullHistoryBackfillManager(
-        lambda _p, _i, _t, _s, _e: 1440,
-        now_factory=lambda: now,
-    )
+    manager = FullHistoryBackfillManager(lambda *_: 1440, now_factory=lambda: now)
     manager.start("P", [("EURUSD", "EUR/USD")])
-    probe = manager.next_request("P")
-    parts = probe.split("|")
-    manager.availability_result("P", parts[-1], earliest=datetime.fromisoformat(parts[3]), latest=datetime.fromisoformat(parts[4]), count=1440)
-    next_probe = manager.next_request("P")
-    assert next_probe.startswith("AVAILABILITY|")
+    _discover(manager, "P", now)
+    probe = manager.next_request("P").split("|")
+    decision = manager.availability_result("P", probe[5], earliest=datetime.fromisoformat(probe[3]), latest=datetime.fromisoformat(probe[4]), count=1440)
+    assert decision == "SKIP|1440|1440"
     status = manager.status("P")["jobs"][0]["instruments"][0]
     assert status["ranges_skipped_existing"] == 1
 

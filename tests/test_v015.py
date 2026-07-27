@@ -6,7 +6,7 @@ from axetos_market_data.web import create_app
 
 
 def test_version_015():
-    assert __version__ == "0.60.10"
+    assert __version__ == "0.60.11"
 
 
 def test_common_broker_symbol_variants_share_identity():

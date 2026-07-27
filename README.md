@@ -4,6 +4,10 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.60.11
+
+Version 0.60.11 replaces coarse/monthly history guessing with an explicit ten-year boundary-discovery phase. For each provider symbol, MT5 is asked exactly once for M1, H1, and D1 across the same ten-year window. The earliest candle actually returned becomes the authoritative boundary for that provider, terminal, symbol, and timeframe. Only after all three boundaries are known does the server construct the storage plan: M1 from its discovered boundary to now, H1 from its boundary up to the M1 boundary, and D1 from its boundary up to the H1 boundary. Empty timeframes are omitted completely, and the coordinator never probes or downloads a range older than MT5 proved available. MT5 bridge v1.26 adds explicit discovery Journal messages. Exactly one history operation remains in flight per provider; live ingestion and the dedicated history-storage process remain isolated.
+
 ## Version 0.60.10
 
 Version 0.60.10 corrects the coarse-to-fine full-history planner so the broad availability probe applies to every timeframe tier, not only M1. M1 first asks for the complete recent M1 tier and drills into daily ranges only when provider history exists and local coverage is incomplete. H1 first asks for the complete three-year H1 tier and drills into month-sized ranges only when provider history exists. D1 similarly probes the complete deep-history tier before subdividing into yearly ranges. A zero-candle broad result therefore advances immediately to the next timeframe instead of retrying every month or year. Exactly one operation remains in flight per provider, and live tick ingestion plus the dedicated history-storage process are unchanged. MT5 bridge v1.25 is unchanged.

@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.25"
+#property version   "1.26"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -44,7 +44,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.25: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.26: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -692,14 +692,18 @@ void RefreshRepairRequest()
    StringTrimLeft(interval); StringTrimRight(interval);
    string resolved = ResolveProviderSymbol(symbol);
 
-   if(command == "AVAILABILITY" && part_count == 6)
+   if((command == "AVAILABILITY" || command == "DISCOVER") && part_count == 6)
    {
       string start_time = parts[3];
       string end_time = parts[4];
       string request_id = parts[5];
       ENUM_TIMEFRAMES timeframe = IntervalTimeframe(interval);
-      PrintFormat("Axetos MT5 Bridge: checking range %s %s, %s through %s; request=%s.",
-                  resolved, interval, start_time, end_time, request_id);
+      if(command == "DISCOVER")
+         PrintFormat("Axetos MT5 Bridge: discovering available %s history for %s across the ten-year window, %s through %s; request=%s.",
+                     interval, resolved, start_time, end_time, request_id);
+      else
+         PrintFormat("Axetos MT5 Bridge: checking download range %s %s, %s through %s; request=%s.",
+                     resolved, interval, start_time, end_time, request_id);
       if(!g_history_job_seen)
       {
          PrintFormat("Axetos MT5 Bridge: full-history job received; probing %s %s.", resolved, interval);
@@ -748,8 +752,15 @@ void RefreshRepairRequest()
       if(reported)
       {
          StringTrimLeft(server_decision); StringTrimRight(server_decision);
-         PrintFormat("Axetos MT5 Bridge: availability result %s %s, %s through %s; candles=%d; server=%s.",
-                     resolved, interval, start_time, end_time, available_count, server_decision);
+         if(command == "DISCOVER")
+            PrintFormat("Axetos MT5 Bridge: %s history discovery for %s completed; bars=%d, earliest=%s, latest=%s, server=%s.",
+                        interval, resolved, available_count,
+                        earliest > 0 ? TimeToString(earliest, TIME_DATE|TIME_MINUTES) : "unavailable",
+                        latest > 0 ? TimeToString(latest, TIME_DATE|TIME_MINUTES) : "unavailable",
+                        server_decision);
+         else
+            PrintFormat("Axetos MT5 Bridge: availability result %s %s, %s through %s; candles=%d; server=%s.",
+                        resolved, interval, start_time, end_time, available_count, server_decision);
          g_pending_probe_request_id = "";
          g_pending_probe_attempts = 0;
       }

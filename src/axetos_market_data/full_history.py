@@ -167,11 +167,11 @@ class FullHistoryBackfillManager:
         earliest: datetime | None,
         latest: datetime | None,
         count: int,
-    ) -> None:
+    ) -> str:
         with self._lock:
             job, item = self._active_item(provider_key, request_id)
             if item is None or job is None:
-                return
+                return "IGNORED"
             item.ranges_probed += 1
             item.available_count = max(0, count)
             item.earliest_available = earliest
@@ -187,17 +187,20 @@ class FullHistoryBackfillManager:
             item.last_result = f"availability confirmed: provider={count}, local={item.local_count}"
             if count <= 0 or earliest is None or latest is None:
                 item.ranges_unavailable += 1
+                local_count = item.local_count
                 self._advance_range(job, item)
-                return
+                return f"UNAVAILABLE|{count}|{local_count}"
             if item.local_count >= count:
                 item.ranges_skipped_existing += 1
+                local_count = item.local_count
                 self._advance_range(job, item)
-                return
+                return f"SKIP|{count}|{local_count}"
             item.current_request_id = uuid.uuid4().hex
             item.request_kind = "backfill"
             item.status = "importing"
             item.dispatched_at = None
             item.dispatch_attempts = 0
+            return f"BACKFILL|{count}|{item.local_count}"
 
     def batch_result(
         self,

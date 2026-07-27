@@ -4,7 +4,7 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.60.3
+## Version 0.60.4
 
 Version 0.60.3 makes full-history backfill strictly sequential per provider. The server delivers one availability or download command, waits for the matching acknowledgement, and only then advances to the next range. Polling cannot receive the same command repeatedly during its 30-second delivery lease; redelivery occurs only after the lease expires. MT5 bridge v1.21 always logs successful server storage acknowledgement for each downloaded batch.
 

@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.21"
+#property version   "1.22"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -703,12 +703,13 @@ void RefreshRepairRequest()
          result_path += "&earliestUtc=" + IsoUtc(CandleTimeToUtc(earliest, interval));
          result_path += "&latestUtc=" + IsoUtc(CandleTimeToUtc(latest, interval));
       }
-      bool reported = PostJson(result_path, "{}");
+      string server_decision = "";
+      bool reported = PostJsonText(result_path, "{}", server_decision);
       if(reported)
       {
-         PrintFormat("Axetos MT5 Bridge: availability result %s %s, %s through %s; candles=%d%s.",
-                     resolved, interval, start_time, end_time, available_count,
-                     history_sync_pending ? " (unavailable after retries)" : "");
+         StringTrimLeft(server_decision); StringTrimRight(server_decision);
+         PrintFormat("Axetos MT5 Bridge: availability result %s %s, %s through %s; candles=%d; server=%s.",
+                     resolved, interval, start_time, end_time, available_count, server_decision);
          g_pending_probe_request_id = "";
          g_pending_probe_attempts = 0;
       }
@@ -938,6 +939,45 @@ bool GetText(string path, string &response)
       RecordHttpFailure("GET", path, status, request_error, response);
    else
       RecordHttpApplicationFailure("GET", path, status, request_error, response);
+   return false;
+}
+
+bool PostJsonText(string path, string payload, string &response)
+{
+   if(!HttpAttemptAllowed())
+      return false;
+
+   string url = InpServerUrl + path;
+   string headers = "Content-Type: application/json\r\nAccept: text/plain, application/json\r\n";
+   if(InpBridgeToken != "")
+      headers += "Authorization: Bearer " + InpBridgeToken + "\r\n";
+
+   char data[];
+   char result[];
+   string result_headers;
+   int length = StringToCharArray(payload, data, 0, WHOLE_ARRAY, CP_UTF8);
+   if(length > 0)
+      ArrayResize(data, length - 1);
+   ArrayResize(result, 0);
+
+   ResetLastError();
+   int status = WebRequest("POST", url, headers, InpRequestTimeoutMs, data, result, result_headers);
+   int request_error = GetLastError();
+
+   response = "";
+   if(ArraySize(result) > 0)
+      response = CharArrayToString(result, 0, ArraySize(result), CP_UTF8);
+
+   if(status >= 200 && status < 300)
+   {
+      RecordHttpSuccess();
+      return true;
+   }
+
+   if(status < 0 || status >= 500)
+      RecordHttpFailure("POST", path, status, request_error, response);
+   else
+      RecordHttpApplicationFailure("POST", path, status, request_error, response);
    return false;
 }
 

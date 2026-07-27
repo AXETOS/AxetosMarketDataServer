@@ -468,10 +468,10 @@ def create_app(
         latest_utc: datetime | None = Query(default=None, alias="latestUtc"),
         candle_count: int = Query(default=0, alias="candleCount"),
     ) -> dict[str, object]:
-        full_history.availability_result(
+        decision = full_history.availability_result(
             provider_key, request_id, earliest=earliest_utc, latest=latest_utc, count=candle_count
         )
-        return {"accepted": True, "requestId": request_id}
+        return PlainTextResponse(decision)
 
     @app.post("/api/full-history/{provider_key}")
     def start_full_history(provider_key: str) -> dict[str, object]:

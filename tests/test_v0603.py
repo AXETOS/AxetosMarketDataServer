@@ -31,6 +31,6 @@ def test_history_request_redelivers_after_lease_expiry() -> None:
 
 def test_bridge_reports_stored_batch_acknowledgement() -> None:
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "1.21"' in source
+    assert '#property version   "1.22"' in source
     assert "backfill batch stored for %s %s" in source
     assert "server acknowledged" in source

@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.19"
+#property version   "1.20"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -24,6 +24,9 @@ datetime g_http_retry_after = 0;
 int g_http_suppressed_requests = 0;
 datetime g_last_history_progress_log = 0;
 bool g_history_job_seen = false;
+string g_pending_probe_request_id = "";
+int g_pending_probe_attempts = 0;
+datetime g_last_probe_progress_log = 0;
 
 // Provider-native week/month history is never requested. The server builds
 // Monday-Sunday weeks and true calendar months exclusively from canonical daily data.
@@ -41,7 +44,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.19: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.20: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -662,11 +665,36 @@ void RefreshRepairRequest()
          PrintFormat("Axetos MT5 Bridge: full-history job received; probing %s %s.", resolved, interval);
          g_history_job_seen = true;
       }
+      if(g_pending_probe_request_id != request_id)
+      {
+         g_pending_probe_request_id = request_id;
+         g_pending_probe_attempts = 0;
+      }
+
       datetime earliest = 0, latest = 0;
       int available_count = 0, probe_error = 0;
       bool ok = timeframe != PERIOD_CURRENT && resolved != "" && SymbolSelect(resolved, true) &&
                 ProbeHistoryRange(resolved, timeframe, interval, start_time, end_time,
                                   earliest, latest, available_count, probe_error);
+
+      // CopyRates returns -1 while MT5 downloads/builds a missing series. Keep the
+      // same server request pending and retry on a later timer cycle so live tick
+      // collection is not blocked by a synchronous wait.
+      bool history_sync_pending = (available_count <= 0 &&
+                                   (probe_error == 4401 || probe_error == 4403 || probe_error == 4405));
+      if(history_sync_pending && g_pending_probe_attempts < 10)
+      {
+         g_pending_probe_attempts++;
+         datetime probe_now = TimeCurrent();
+         if(g_last_probe_progress_log == 0 || probe_now - g_last_probe_progress_log >= 10)
+         {
+            PrintFormat("Axetos MT5 Bridge: waiting for MT5 history sync; %s %s, %s through %s, attempt %d/10, error=%d.",
+                        resolved, interval, start_time, end_time, g_pending_probe_attempts, probe_error);
+            g_last_probe_progress_log = probe_now;
+         }
+         return;
+      }
+
       string result_path = "/api/market-data/mt5/history-availability?providerKey=" + InpProviderKey +
                            "&requestId=" + request_id +
                            "&candleCount=" + IntegerToString(available_count);
@@ -675,8 +703,21 @@ void RefreshRepairRequest()
          result_path += "&earliestUtc=" + IsoUtc(CandleTimeToUtc(earliest, interval));
          result_path += "&latestUtc=" + IsoUtc(CandleTimeToUtc(latest, interval));
       }
-      PostJson(result_path, "{}");
-      if(probe_error != 0 && probe_error != 4401)
+      bool reported = PostJson(result_path, "{}");
+      if(reported)
+      {
+         PrintFormat("Axetos MT5 Bridge: availability result %s %s, %s through %s; candles=%d%s.",
+                     resolved, interval, start_time, end_time, available_count,
+                     history_sync_pending ? " (unavailable after retries)" : "");
+         g_pending_probe_request_id = "";
+         g_pending_probe_attempts = 0;
+      }
+      else
+      {
+         PrintFormat("Axetos MT5 Bridge: could not report availability result for %s %s; request remains pending.",
+                     resolved, interval);
+      }
+      if(probe_error != 0 && !history_sync_pending)
          PrintFormat("Axetos MT5 Bridge: %s availability probe failed for %s (%d).", interval, resolved, probe_error);
       return;
    }

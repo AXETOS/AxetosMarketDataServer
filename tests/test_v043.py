@@ -25,9 +25,9 @@ def _discover(client: TestClient) -> None:
 
 
 def test_release_metadata() -> None:
-    assert __version__ == "0.60.4"
-    assert 'version = "0.60.4"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.60.4" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.60.5"
+    assert 'version = "0.60.5"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.60.5" in (ROOT / "README.md").read_text(encoding="utf-8")
 
 
 def test_enabled_symbols_plain_text_contract(tmp_path) -> None:
@@ -52,12 +52,13 @@ def test_optional_bridge_control_endpoints_exist(tmp_path) -> None:
         assert repair.text == ""
         result = client.post("/api/market-data/mt5/repair-result", params={"providerKey": "ICMarkets.MT5", "terminalInstanceId": "terminal-1", "providerSymbol": "EURUSD", "interval": "1m", "completed": "true", "requestId": "r1"}, json={})
         assert result.status_code == 200
-        assert result.json()["accepted"] is True
+        assert result.json()["accepted"] is False
+        assert result.json()["acknowledgement"] == "IGNORED"
 
 
 def test_bridge_http_4xx_does_not_trigger_transport_backoff() -> None:
     source = BRIDGE.read_text(encoding="utf-8")
-    assert '#property version   "1.22"' in source
+    assert '#property version   "1.23"' in source
     assert "void RecordHttpApplicationFailure" in source
     assert "if(status < 0 || status >= 500)" in source
     assert "continuing other requests" in source

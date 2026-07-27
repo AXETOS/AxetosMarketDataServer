@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.22"
+#property version   "1.23"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -469,9 +469,12 @@ bool SendCandlesWithCoverage(string symbol, ENUM_TIMEFRAMES timeframe, string in
 
 
 bool SendCandlesForDateRange(string symbol, ENUM_TIMEFRAMES timeframe, string interval,
-                             string start_date, string end_date, int &copied_out, int &error_out, string request_id)
+                             string start_date, string end_date, int &copied_out, int &stored_out,
+                             int &skipped_out, int &error_out, string request_id)
 {
    copied_out = 0;
+   stored_out = 0;
+   skipped_out = 0;
    error_out = 0;
 
    string normalized_start = start_date;
@@ -539,7 +542,20 @@ bool SendCandlesForDateRange(string symbol, ENUM_TIMEFRAMES timeframe, string in
       "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"%s\",\"requestId\":\"%s\",\"candles\":[%s]}",
       JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), JsonEscape(symbol),
       JsonEscape(CanonicalSymbol(symbol)), interval, JsonEscape(request_id), items);
-   return PostJson("/api/market-data/ingest/mt5/candles", json);
+   string storage_response = "";
+   if(!PostJsonText("/api/market-data/ingest/mt5/candles", json, storage_response))
+      return false;
+   stored_out = JsonIntegerField(storage_response, "stored", -1);
+   skipped_out = JsonIntegerField(storage_response, "skipped", -1);
+   if(stored_out < 0 || skipped_out < 0)
+   {
+      PrintFormat("Axetos MT5 Bridge: invalid candle-storage acknowledgement for %s %s: %s",
+                  symbol, interval, storage_response);
+      return false;
+   }
+   PrintFormat("Axetos MT5 Bridge: server stored %d and skipped %d of %d bars for %s %s.",
+               stored_out, skipped_out, copied_out, symbol, interval);
+   return true;
 }
 
 
@@ -660,6 +676,8 @@ void RefreshRepairRequest()
       string end_time = parts[4];
       string request_id = parts[5];
       ENUM_TIMEFRAMES timeframe = IntervalTimeframe(interval);
+      PrintFormat("Axetos MT5 Bridge: checking range %s %s, %s through %s; request=%s.",
+                  resolved, interval, start_time, end_time, request_id);
       if(!g_history_job_seen)
       {
          PrintFormat("Axetos MT5 Bridge: full-history job received; probing %s %s.", resolved, interval);
@@ -733,21 +751,20 @@ void RefreshRepairRequest()
    StringTrimLeft(end_time); StringTrimRight(end_time);
    StringTrimLeft(request_id); StringTrimRight(request_id);
 
-   datetime progress_now = TimeCurrent();
-   bool logged_progress = false;
-   if(g_last_history_progress_log == 0 || progress_now - g_last_history_progress_log >= 10)
-   {
-      PrintFormat("Axetos MT5 Bridge: backfill %s %s, %s through %s.", resolved, interval, start_time, end_time);
-      g_last_history_progress_log = progress_now;
-      logged_progress = true;
-   }
+   PrintFormat("Axetos MT5 Bridge: download started for %s %s, %s through %s; request=%s.",
+               resolved, interval, start_time, end_time, request_id);
+   g_last_history_progress_log = TimeCurrent();
 
    bool completed = false;
    int copied = 0;
+   int stored = 0;
+   int skipped = 0;
    int copy_error = 0;
    ENUM_TIMEFRAMES requested_timeframe = IntervalTimeframe(interval);
    if(requested_timeframe != PERIOD_CURRENT && resolved != "" && SymbolSelect(resolved, true))
-      completed = SendCandlesForDateRange(resolved, requested_timeframe, interval, start_time, end_time, copied, copy_error, request_id);
+      completed = SendCandlesForDateRange(resolved, requested_timeframe, interval, start_time, end_time,
+                                          copied, stored, skipped, copy_error, request_id);
+   PrintFormat("Axetos MT5 Bridge: CopyRates returned %d bars for %s %s.", copied, resolved, interval);
    bool unavailable = (!completed && copy_error == 4401);
 
    string result_path = "/api/market-data/mt5/repair-result?providerKey=" + InpProviderKey +
@@ -755,15 +772,22 @@ void RefreshRepairRequest()
                         "&providerSymbol=" + symbol +
                         "&interval=" + interval + "&completed=" + (completed ? "true" : "false") +
                         "&barsReceived=" + IntegerToString(copied) +
-                        "&barsInserted=" + IntegerToString(copied) +
+                        "&barsInserted=" + IntegerToString(stored) +
                         "&unavailable=" + (unavailable ? "true" : "false") +
                         "&errorCode=" + IntegerToString(copy_error) +
                         "&requestId=" + request_id;
-   PostJson(result_path, "{}");
-   if(completed)
-      PrintFormat("Axetos MT5 Bridge: backfill batch stored for %s %s; bars=%d; server acknowledged. Next range will be requested on the next poll.", resolved, interval, copied);
-   else if(!completed)
-      PrintFormat("Axetos MT5 Bridge: backfill batch failed for %s %s; error=%d.", resolved, interval, copy_error);
+   string result_response = "";
+   bool result_reported = PostJsonText(result_path, "{}", result_response);
+   if(result_reported)
+   {
+      StringTrimLeft(result_response); StringTrimRight(result_response);
+      PrintFormat("Axetos MT5 Bridge: stored/skipped result for %s %s; received=%d, stored=%d, skipped=%d; server acknowledged=%s.",
+                  resolved, interval, copied, stored, skipped, result_response);
+      PrintFormat("Axetos MT5 Bridge: next range will be requested after server acknowledgement for request=%s.", request_id);
+   }
+   else
+      PrintFormat("Axetos MT5 Bridge: could not acknowledge backfill result for %s %s; request=%s remains in flight.",
+                  resolved, interval, request_id);
 }
 
 void RefreshServerSelection()
@@ -940,6 +964,25 @@ bool GetText(string path, string &response)
    else
       RecordHttpApplicationFailure("GET", path, status, request_error, response);
    return false;
+}
+
+int JsonIntegerField(string json, string field, int fallback)
+{
+   string needle = "\"" + field + "\":";
+   int pos = StringFind(json, needle);
+   if(pos < 0) return fallback;
+   pos += StringLen(needle);
+   while(pos < StringLen(json) && StringGetCharacter(json, pos) == 32) pos++;
+   int end = pos;
+   if(end < StringLen(json) && StringGetCharacter(json, end) == 45) end++;
+   while(end < StringLen(json))
+   {
+      ushort ch = StringGetCharacter(json, end);
+      if(ch < 48 || ch > 57) break;
+      end++;
+   }
+   if(end <= pos) return fallback;
+   return (int)StringToInteger(StringSubstr(json, pos, end - pos));
 }
 
 bool PostJsonText(string path, string payload, string &response)

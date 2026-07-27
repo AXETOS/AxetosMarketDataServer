@@ -7,7 +7,7 @@ from axetos_market_data.providers.yahoo import YahooHistoricalProvider
 
 
 def test_version_012():
-    assert __version__ == "0.60.4"
+    assert __version__ == "0.60.5"
 
 
 def test_fx_market_week_boundaries():

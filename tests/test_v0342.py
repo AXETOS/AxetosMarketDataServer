@@ -48,6 +48,6 @@ def test_postgres_executemany_uses_cursor_and_tracks_changes() -> None:
 
 def test_v0342_release_metadata() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert __version__ == "0.60.4"
-    assert 'version = "0.60.4"' in (root / "pyproject.toml").read_text()
-    assert "## Version 0.60.4" in (root / "README.md").read_text()
+    assert __version__ == "0.60.5"
+    assert 'version = "0.60.5"' in (root / "pyproject.toml").read_text()
+    assert "## Version 0.60.5" in (root / "README.md").read_text()

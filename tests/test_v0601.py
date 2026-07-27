@@ -16,7 +16,7 @@ def test_availability_probe_is_not_blocked_by_live_queue_pressure() -> None:
     assert request.startswith("AVAILABILITY|EURUSD|1m|")
 
 
-def test_backfill_download_is_throttled_by_live_queue_pressure() -> None:
+def test_backfill_command_dispatch_is_not_stranded_by_live_queue_pressure() -> None:
     pressure = {"allow": True}
     manager = FullHistoryBackfillManager(
         lambda *_args: 0,
@@ -35,8 +35,5 @@ def test_backfill_download_is_throttled_by_live_queue_pressure() -> None:
     )
 
     pressure["allow"] = False
-    assert manager.next_request("ICMarkets.MT5") == ""
-    assert manager.status("ICMarkets.MT5")["jobs"][0]["instruments"][0]["status"] == "throttled"
-
-    pressure["allow"] = True
     assert manager.next_request("ICMarkets.MT5").startswith("BACKFILL|EURUSD|1m|")
+    assert manager.next_request("ICMarkets.MT5") == ""

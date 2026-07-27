@@ -4,6 +4,10 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.60.5
+
+Version 0.60.5 completes the sequential full-history BACKFILL handshake. A provider-count/local-count mismatch now transitions immediately to a matching BACKFILL command without being stranded behind transient live-queue pressure. The bridge logs the exact range, starts CopyRates, reports returned bars, reads the server's real insert-only storage result, and sends those stored/skipped counts back to the coordinator. The server returns an explicit STORED, UNAVAILABLE, ERROR, or IGNORED acknowledgement and does not advance to the next availability range until the current download result is acknowledged. Historical writes remain low-priority and chunked inside the server, while live tick ingestion keeps its independent queue and writer priority. MT5 bridge v1.23 adds the complete Journal trace and no longer assumes every downloaded candle was inserted.
+
 ## Version 0.60.4
 
 Version 0.60.3 makes full-history backfill strictly sequential per provider. The server delivers one availability or download command, waits for the matching acknowledgement, and only then advances to the next range. Polling cannot receive the same command repeatedly during its 30-second delivery lease; redelivery occurs only after the lease expires. MT5 bridge v1.21 always logs successful server storage acknowledgement for each downloaded batch.

@@ -137,13 +137,6 @@ class FullHistoryBackfillManager:
                 now = self._now_factory()
                 if item.dispatched_at is not None and now - item.dispatched_at < self._request_lease:
                     return ""
-                if (
-                    item.request_kind == "backfill"
-                    and self._pressure_probe is not None
-                    and not self._pressure_probe()
-                ):
-                    item.status = "throttled"
-                    return ""
                 item.dispatched_at = now
                 item.dispatch_attempts += 1
                 item.status = "probing" if item.request_kind == "availability" else "importing"
@@ -212,11 +205,11 @@ class FullHistoryBackfillManager:
         *,
         unavailable: bool = False,
         error_code: int | None = None,
-    ) -> None:
+    ) -> str:
         with self._lock:
             job, item = self._active_item(provider_key, request_id)
             if item is None or job is None:
-                return
+                return "IGNORED"
             item.last_error_code = error_code
             item.dispatched_at = None
             if unavailable:
@@ -225,7 +218,7 @@ class FullHistoryBackfillManager:
                 item.error = f"Confirmed history became unavailable (MT5 error {error_code})"
                 item.last_result = item.error
                 self._advance_range(job, item)
-                return
+                return f"UNAVAILABLE|{max(0, bars_received)}|{max(0, bars_inserted)}|{max(0, bars_received - bars_inserted)}"
             if not completed:
                 item.current_request_id = None
                 item.request_kind = None
@@ -237,14 +230,18 @@ class FullHistoryBackfillManager:
                     item.ranges_unavailable += 1
                     item.retry_count = 0
                     self._advance_range(job, item)
-                return
+                return f"ERROR|{max(0, bars_received)}|{max(0, bars_inserted)}|{max(0, bars_received - bars_inserted)}|{error_code or 0}"
             item.retry_count = 0
             item.error = None
             item.batches_completed += 1
             item.bars_received += max(0, bars_received)
             item.bars_inserted += max(0, bars_inserted)
-            item.last_result = f"batch stored: received={max(0, bars_received)}, inserted={max(0, bars_inserted)}"
+            received = max(0, bars_received)
+            inserted = max(0, min(bars_inserted, received))
+            skipped = max(0, received - inserted)
+            item.last_result = f"batch stored: received={received}, inserted={inserted}, skipped={skipped}"
             self._advance_range(job, item)
+            return f"STORED|{received}|{inserted}|{skipped}"
 
     def _ensure_tier(self, job: FullHistoryJob, item: InstrumentProgress) -> None:
         tiers = self._tiers_by_job[job.job_id]

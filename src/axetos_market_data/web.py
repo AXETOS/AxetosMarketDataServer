@@ -409,9 +409,19 @@ def create_app(
 
     @app.post("/api/market-data/ingest/mt5/candles")
     def bridge_candles(request: BridgeCandlesRequest) -> dict[str, object]:
-        try: count=bridge.candles(request)
-        except ValueError as exc: raise HTTPException(400, str(exc)) from exc
-        return {"accepted": count}
+        received = len(request.candles)
+        try:
+            stored = bridge.candles(request)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        skipped = max(0, received - stored)
+        return {
+            "acknowledgement": "stored",
+            "requestId": request.request_id,
+            "received": received,
+            "stored": stored,
+            "skipped": skipped,
+        }
 
     @app.get("/api/market-data/mt5/discovered-instruments")
     def discovered_instruments(provider_key: str | None=None, terminal_instance_id: str | None=None) -> dict[str, object]:
@@ -454,11 +464,16 @@ def create_app(
         error_code: int | None = Query(default=None, alias="errorCode"),
     ) -> dict[str, object]:
         _ = (terminal_instance_id, provider_symbol, interval)
-        full_history.batch_result(
+        acknowledgement = full_history.batch_result(
             provider_key, request_id, bars_received, bars_inserted, completed,
             unavailable=unavailable, error_code=error_code,
         )
-        return {"accepted": True, "requestId": request_id}
+        accepted = acknowledgement != "IGNORED"
+        return {
+            "accepted": accepted,
+            "requestId": request_id,
+            "acknowledgement": acknowledgement,
+        }
 
     @app.post("/api/market-data/mt5/history-availability")
     def bridge_history_availability(

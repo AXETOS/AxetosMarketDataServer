@@ -39,7 +39,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.14: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.17: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();

@@ -196,6 +196,7 @@ def create_app(
 
     full_history = FullHistoryBackfillManager(
         lambda provider, instrument: store.earliest_candle_time(provider, instrument, "1m"),
+        batch_days=1,
         on_instrument_completed=rebuild_full_history_derived,
     )
     started_utc = datetime.now(UTC)
@@ -284,6 +285,7 @@ def create_app(
         heartbeat_sink=supervisor.record_bridge_heartbeat,
         observation_sink=supervisor.record_bridge_observation,
     )
+    full_history.set_pressure_probe(bridge.can_run_background_write)
     quality = CandleQualityService(store)
     events = OperationalEventService(store)
     calendar = MarketCalendar()

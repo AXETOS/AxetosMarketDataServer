@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from threading import RLock
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -170,11 +171,40 @@ class Mt5BridgeService:
 
     def enqueue_ticks(self, request: BridgeTicksRequest) -> int:
         self.validate_identity(request.provider_key, request.terminal_instance_id)
-        if not request.ticks: return 0
-        try: self._queue.put_nowait(request)
-        except queue.Full as exc: raise RuntimeError("MT5 ingestion queue is full") from exc
-        self.stats.queued_batches += 1; self.stats.queued_ticks += len(request.ticks); self.stats.queue_depth = self._queue.qsize()
+        if not request.ticks:
+            return 0
+        try:
+            # Give the dedicated live-ingestion worker a brief chance to drain rather
+            # than immediately returning HTTP 503 while a background SQLite batch is
+            # yielding. Backfill is throttled separately and must never own this queue.
+            self._queue.put(request, timeout=2.0)
+        except queue.Full as exc:
+            raise RuntimeError("MT5 ingestion queue is full") from exc
+        self.stats.queued_batches += 1
+        self.stats.queued_ticks += len(request.ticks)
+        self.stats.queue_depth = self._queue.qsize()
         return len(request.ticks)
+
+    def queue_pressure(self) -> float:
+        maxsize = max(1, int(self._queue.maxsize))
+        return min(1.0, self._queue.qsize() / maxsize)
+
+    def can_run_background_write(self) -> bool:
+        # Reserve practically all ingestion capacity for live traffic. A historical
+        # writer pauses as soon as even a small live backlog appears.
+        return self._queue.qsize() <= 2
+
+    def _insert_historical_low_priority(self, candles: list[Candle]) -> int:
+        written = 0
+        chunk_size = 250
+        for offset in range(0, len(candles), chunk_size):
+            while not self.can_run_background_write():
+                time.sleep(0.05)
+            written += self.store.insert_candles_missing(candles[offset:offset + chunk_size])
+            # Release the SQLite writer between chunks so live tick/candle commits and
+            # quote reads remain responsive even during multi-year imports.
+            time.sleep(0.01)
+        return written
 
     def quotes(self, request: BridgeQuotesRequest) -> int:
         """Persist provider-scoped quote snapshots for display only.
@@ -255,7 +285,7 @@ class Mt5BridgeService:
             except ValueError:
                 continue
         values = self._sanitize_historical_minutes(incoming)
-        written = self.store.insert_candles_missing(values) if request.request_id else self.store.upsert_candles(values)
+        written = self._insert_historical_low_priority(values) if request.request_id else self.store.upsert_candles(values)
         if values and not request.request_id:
             from .aggregation import CANONICAL_DERIVED_TIMEFRAMES, CandleAggregator
             aggregator = CandleAggregator(self.store)

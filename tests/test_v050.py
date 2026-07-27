@@ -15,9 +15,9 @@ def tick(at: datetime, price: str) -> Tick:
 
 def test_version_and_release_notes() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert __version__ == "0.58.0"
-    assert 'version = "0.58.0"' in (root / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.58.0" in (root / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.59.0"
+    assert 'version = "0.59.0"' in (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.59.0" in (root / "README.md").read_text(encoding="utf-8")
 
 
 def test_identical_complete_ohlc_is_not_persisted(tmp_path: Path) -> None:

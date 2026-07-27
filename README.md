@@ -4,9 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.58.0
+## Version 0.59.0
 
-Version 0.58.0 confirms the earliest retrievable MT5 M1 boundary before starting full-history import. The bridge probes forward from the broker-advertised first date until CopyRates returns real bars, so an optimistic SERIES_SERVER_FIRSTDATE is never used blindly. MT5 error 4401 now marks only the requested empty range as unavailable and advances the background cursor instead of retrying forever; transient failures are retried up to three times before the range is skipped and reported. MT5 bridge v1.17 accompanies this release.
+Version 0.59.0 protects live MT5 ingestion from full-history backfill load. Historical M1 writes are committed in small low-priority chunks and pause whenever the live ingestion queue has a backlog. The full-history coordinator also stops dispatching new MT5 history requests under live pressure and uses one-day request windows. Live tick submissions wait briefly for reserved ingestion capacity instead of immediately returning HTTP 503 during a yielding background write.
 
 ## Version 0.57.0
 

@@ -44,13 +44,24 @@ class FullHistoryBackfillManager:
     bridge polls this queue, so history work yields naturally to normal ingestion.
     """
 
-    def __init__(self, earliest_existing: Callable[[str, str], datetime | None], batch_days: int = 3, on_instrument_completed: Callable[[str, str], None] | None = None) -> None:
+    def __init__(
+        self,
+        earliest_existing: Callable[[str, str], datetime | None],
+        batch_days: int = 1,
+        on_instrument_completed: Callable[[str, str], None] | None = None,
+        pressure_probe: Callable[[], bool] | None = None,
+    ) -> None:
         self._earliest_existing = earliest_existing
         self._batch_days = max(1, batch_days)
         self._lock = threading.RLock()
         self._on_instrument_completed = on_instrument_completed
+        self._pressure_probe = pressure_probe
         self._jobs: dict[str, FullHistoryJob] = {}
         self._provider_job: dict[str, str] = {}
+
+    def set_pressure_probe(self, pressure_probe: Callable[[], bool] | None) -> None:
+        with self._lock:
+            self._pressure_probe = pressure_probe
 
     def start(self, provider_key: str, symbols: list[tuple[str, str]]) -> dict[str, object]:
         with self._lock:
@@ -69,6 +80,8 @@ class FullHistoryBackfillManager:
 
     def next_request(self, provider_key: str) -> str:
         with self._lock:
+            if self._pressure_probe is not None and not self._pressure_probe():
+                return ""
             job_id = self._provider_job.get(provider_key)
             if not job_id:
                 return ""

@@ -4,6 +4,10 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.60.6
+
+Version 0.60.6 fixes the remaining MT5 full-history transfer failure observed after a correct `BACKFILL|1435|1434` decision. MT5 `CopyRates` returned all 1,435 bars, but posting the entire day as one JSON request could exceed the bridge WebRequest timeout and leave the provider operation in flight. Bridge v1.24 now uploads targeted history in bounded 100-candle chunks. Every chunk must receive a valid `stored`/`skipped` acknowledgement whose counts exactly match that chunk before upload continues. The bridge aggregates the acknowledged counts and sends the final repair result only after all chunks have succeeded. A failed or malformed chunk leaves the same request in flight for an idempotent retry; the server continues insert-only storage, so already accepted candles are skipped rather than duplicated. Live ticks keep their separate endpoint and queue.
+
 ## Version 0.60.5
 
 Version 0.60.5 completes the sequential full-history BACKFILL handshake. A provider-count/local-count mismatch now transitions immediately to a matching BACKFILL command without being stranded behind transient live-queue pressure. The bridge logs the exact range, starts CopyRates, reports returned bars, reads the server's real insert-only storage result, and sends those stored/skipped counts back to the coordinator. The server returns an explicit STORED, UNAVAILABLE, ERROR, or IGNORED acknowledgement and does not advance to the next availability range until the current download result is acknowledged. Historical writes remain low-priority and chunked inside the server, while live tick ingestion keeps its independent queue and writer priority. MT5 bridge v1.23 adds the complete Journal trace and no longer assumes every downloaded candle was inserted.

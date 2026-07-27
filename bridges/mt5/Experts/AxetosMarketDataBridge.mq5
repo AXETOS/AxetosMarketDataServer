@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.23"
+#property version   "1.24"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -44,7 +44,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.21: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.24: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -523,36 +523,58 @@ bool SendCandlesForDateRange(string symbol, ENUM_TIMEFRAMES timeframe, string in
       return false;
    }
 
+   // Keep each HTTP request small enough to complete comfortably inside the
+   // bridge timeout. The full provider operation remains in flight until every
+   // chunk has received a valid server storage acknowledgement.
+   const int upload_chunk_size = 100;
    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-   string items = "";
-   for(int i = 0; i < copied; i++)
+   int chunk_count = (copied + upload_chunk_size - 1) / upload_chunk_size;
+   for(int chunk_index = 0; chunk_index < chunk_count; chunk_index++)
    {
-      if(items != "") items += ",";
-      items += StringFormat(
-         "{\"timeUtc\":\"%s\",\"open\":%s,\"high\":%s,\"low\":%s,\"close\":%s,\"tickVolume\":%I64d}",
-         IsoUtc(CandleTimeToUtc(rates[i].time, interval)),
-         DoubleToString(rates[i].open, digits),
-         DoubleToString(rates[i].high, digits),
-         DoubleToString(rates[i].low, digits),
-         DoubleToString(rates[i].close, digits),
-         rates[i].tick_volume);
+      int chunk_start = chunk_index * upload_chunk_size;
+      int chunk_end = MathMin(copied, chunk_start + upload_chunk_size);
+      string items = "";
+      for(int i = chunk_start; i < chunk_end; i++)
+      {
+         if(items != "") items += ",";
+         items += StringFormat(
+            "{\"timeUtc\":\"%s\",\"open\":%s,\"high\":%s,\"low\":%s,\"close\":%s,\"tickVolume\":%I64d}",
+            IsoUtc(CandleTimeToUtc(rates[i].time, interval)),
+            DoubleToString(rates[i].open, digits),
+            DoubleToString(rates[i].high, digits),
+            DoubleToString(rates[i].low, digits),
+            DoubleToString(rates[i].close, digits),
+            rates[i].tick_volume);
+      }
+
+      string json = StringFormat(
+         "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"%s\",\"requestId\":\"%s\",\"candles\":[%s]}",
+         JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), JsonEscape(symbol),
+         JsonEscape(CanonicalSymbol(symbol)), interval, JsonEscape(request_id), items);
+      string storage_response = "";
+      PrintFormat("Axetos MT5 Bridge: uploading backfill chunk %d/%d for %s %s; bars=%d; request=%s.",
+                  chunk_index + 1, chunk_count, symbol, interval, chunk_end - chunk_start, request_id);
+      if(!PostJsonText("/api/market-data/ingest/mt5/candles", json, storage_response))
+      {
+         PrintFormat("Axetos MT5 Bridge: backfill chunk %d/%d was not acknowledged; request=%s remains in flight.",
+                     chunk_index + 1, chunk_count, request_id);
+         return false;
+      }
+
+      int chunk_stored = JsonIntegerField(storage_response, "stored", -1);
+      int chunk_skipped = JsonIntegerField(storage_response, "skipped", -1);
+      if(chunk_stored < 0 || chunk_skipped < 0 || chunk_stored + chunk_skipped != chunk_end - chunk_start)
+      {
+         PrintFormat("Axetos MT5 Bridge: invalid candle-storage acknowledgement for chunk %d/%d of %s %s: %s",
+                     chunk_index + 1, chunk_count, symbol, interval, storage_response);
+         return false;
+      }
+      stored_out += chunk_stored;
+      skipped_out += chunk_skipped;
+      PrintFormat("Axetos MT5 Bridge: chunk %d/%d acknowledged for %s %s; stored=%d, skipped=%d.",
+                  chunk_index + 1, chunk_count, symbol, interval, chunk_stored, chunk_skipped);
    }
 
-   string json = StringFormat(
-      "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"%s\",\"requestId\":\"%s\",\"candles\":[%s]}",
-      JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), JsonEscape(symbol),
-      JsonEscape(CanonicalSymbol(symbol)), interval, JsonEscape(request_id), items);
-   string storage_response = "";
-   if(!PostJsonText("/api/market-data/ingest/mt5/candles", json, storage_response))
-      return false;
-   stored_out = JsonIntegerField(storage_response, "stored", -1);
-   skipped_out = JsonIntegerField(storage_response, "skipped", -1);
-   if(stored_out < 0 || skipped_out < 0)
-   {
-      PrintFormat("Axetos MT5 Bridge: invalid candle-storage acknowledgement for %s %s: %s",
-                  symbol, interval, storage_response);
-      return false;
-   }
    PrintFormat("Axetos MT5 Bridge: server stored %d and skipped %d of %d bars for %s %s.",
                stored_out, skipped_out, copied_out, symbol, interval);
    return true;

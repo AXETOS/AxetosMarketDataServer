@@ -448,6 +448,14 @@ class MarketDataStore:
             written = connection.total_changes - before
         return written
 
+    def candle_count_range(self, provider: str, instrument: str, timeframe: str, start: datetime, end: datetime) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM candles WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc>=? AND open_time_utc<=?",
+                (provider, instrument, timeframe, _iso(start), _iso(end)),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     def read_candle_times(self, provider: str, instrument: str, timeframe: str, start: datetime, end: datetime) -> list[datetime]:
         with self.connect() as connection:
             rows = connection.execute("SELECT open_time_utc FROM candles WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc>=? AND open_time_utc<?", (provider, instrument, timeframe, _iso(start), _iso(end))).fetchall()

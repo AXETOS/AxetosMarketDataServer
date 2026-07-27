@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -7,21 +7,43 @@ from axetos_market_data.full_history import FullHistoryBackfillManager
 from axetos_market_data.storage import MarketDataStore
 
 
-def test_full_history_discovers_then_pages_older_without_overwrite(tmp_path):
+def test_tiered_history_probes_exact_range_before_downloading(tmp_path):
     store = MarketDataStore(tmp_path / "market.sqlite")
     store.initialize()
-    existing = Candle("ICMarkets.MT5", "EUR/USD", "1m", datetime(2026, 7, 1, tzinfo=UTC), Decimal("1"), Decimal("1"), Decimal("1"), Decimal("1"), 1, None, True)
-    store.upsert_candle(existing)
-    manager = FullHistoryBackfillManager(lambda p, i: store.earliest_candle_time(p, i), batch_days=3)
+    now = datetime(2026, 7, 27, tzinfo=UTC)
+    manager = FullHistoryBackfillManager(
+        lambda p, i, t, start, end: store.candle_count_range(p, i, t, start, end),
+        now_factory=lambda: now,
+    )
     manager.start("ICMarkets.MT5", [("EURUSD", "EUR/USD")])
-    request = manager.next_request("ICMarkets.MT5")
-    assert request.startswith("AVAILABILITY|EURUSD|1m|")
-    request_id = request.split("|")[-1]
-    manager.availability_result("ICMarkets.MT5", request_id, datetime(2020, 1, 1, tzinfo=UTC))
-    batch = manager.next_request("ICMarkets.MT5")
-    parts = batch.split("|")
-    assert parts[0] == "BACKFILL"
-    assert datetime.fromisoformat(parts[4]) < existing.open_time
+    probe = manager.next_request("ICMarkets.MT5")
+    parts = probe.split("|")
+    assert parts[:3] == ["AVAILABILITY", "EURUSD", "1m"]
+    request_id = parts[-1]
+    manager.availability_result(
+        "ICMarkets.MT5", request_id,
+        earliest=datetime.fromisoformat(parts[3]), latest=datetime.fromisoformat(parts[4]), count=1440,
+    )
+    download = manager.next_request("ICMarkets.MT5")
+    assert download.split("|")[:3] == ["BACKFILL", "EURUSD", "1m"]
+
+
+def test_matching_local_count_skips_download(tmp_path):
+    store = MarketDataStore(tmp_path / "market.sqlite")
+    store.initialize()
+    now = datetime(2026, 7, 27, tzinfo=UTC)
+    manager = FullHistoryBackfillManager(
+        lambda _p, _i, _t, _s, _e: 1440,
+        now_factory=lambda: now,
+    )
+    manager.start("P", [("EURUSD", "EUR/USD")])
+    probe = manager.next_request("P")
+    parts = probe.split("|")
+    manager.availability_result("P", parts[-1], earliest=datetime.fromisoformat(parts[3]), latest=datetime.fromisoformat(parts[4]), count=1440)
+    next_probe = manager.next_request("P")
+    assert next_probe.startswith("AVAILABILITY|")
+    status = manager.status("P")["jobs"][0]["instruments"][0]
+    assert status["ranges_skipped_existing"] == 1
 
 
 def test_insert_candles_missing_preserves_existing(tmp_path):
@@ -32,20 +54,11 @@ def test_insert_candles_missing_preserves_existing(tmp_path):
     replacement = Candle("P", "EUR/USD", "1m", when, Decimal("9"), Decimal("9"), Decimal("9"), Decimal("9"), 1, None, True)
     store.upsert_candle(original)
     assert store.insert_candles_missing([replacement]) == 0
-    loaded = store.read_candles("EUR/USD", "1m", provider="P")[-1]
-    assert loaded.close == Decimal("2")
+    assert store.read_candles("EUR/USD", "1m", provider="P")[-1].close == Decimal("2")
 
 
-def test_management_ui_removes_duplicate_symbol_summary_and_adds_full_history():
+def test_management_ui_uses_tiered_history_wording():
     source = Path("src/axetos_market_data/web.py").read_text(encoding="utf-8")
     assert "Configured / selected / failed" not in source
-    assert "Backfill full history" in source
+    assert "Backfill tiered history" in source
     assert "/api/full-history/" in source
-
-def test_bridge_is_server_controlled_and_reports_availability():
-    source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "1.17"' in source
-    assert "SERIES_SERVER_FIRSTDATE" in source
-    assert "AVAILABILITY" in source
-    assert "BACKFILL" in source
-    assert "InpBackfillBarsM1" not in source

@@ -50,4 +50,4 @@ def test_bridge_applies_empty_server_selection_as_stop() -> None:
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
     assert 'server selection is empty; streaming stopped' in source
     assert 'retaining the current stream' not in source
-    assert '#property version   "1.17"' in source
+    assert '#property version   "1.18"' in source

@@ -117,7 +117,7 @@ class QueueStats:
 
 
 class Mt5BridgeService:
-    ALLOWED_INTERVALS = {"1m"}
+    ALLOWED_INTERVALS = {"1m", "1h", "1d"}
 
     def __init__(
         self,
@@ -260,12 +260,11 @@ class Mt5BridgeService:
             return True
 
     def candles(self, request: BridgeCandlesRequest) -> int:
-        """Import historical one-minute bars only.
+        """Import provider-confirmed historical bars without overwriting existing rows.
 
-        Live minute candles are built exclusively from ticks. Historical MT5 bars are
-        sanitized with the same market-closure rule before storage: a trailing unchanged
-        run stays pending, a short run is retained, and a run longer than one hour is
-        discarded as a closed-market flatline.
+        Live minute candles are built exclusively from ticks. Historical M1 bars use the
+        market-closure flatline filter; H1 and D1 remain honest coarse source data and are
+        never expanded into fabricated minute history.
         """
         self.validate_identity(request.provider_key, request.terminal_instance_id)
         interval = request.interval.lower()
@@ -278,13 +277,13 @@ class Mt5BridgeService:
         for item in request.candles:
             try:
                 incoming.append(Candle(
-                    request.provider_key, instrument, "1m", ensure_server_local(item.time_utc),
+                    request.provider_key, instrument, interval, ensure_server_local(item.time_utc),
                     item.open, item.high, item.low, item.close,
                     item.tick_volume or 0, Decimal(item.tick_volume or 0), True,
                 ))
             except ValueError:
                 continue
-        values = self._sanitize_historical_minutes(incoming)
+        values = self._sanitize_historical_minutes(incoming) if interval == "1m" else sorted(incoming, key=lambda item: item.open_time)
         written = self._insert_historical_low_priority(values) if request.request_id else self.store.upsert_candles(values)
         if values and not request.request_id:
             from .aggregation import CANONICAL_DERIVED_TIMEFRAMES, CandleAggregator

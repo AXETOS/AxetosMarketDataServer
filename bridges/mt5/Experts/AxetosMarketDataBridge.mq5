@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.17"
+#property version   "1.18"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -39,7 +39,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.17: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.18: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -580,6 +580,49 @@ bool FindEarliestRetrievableM1(string symbol, datetime &earliest_out)
 }
 
 
+
+ENUM_TIMEFRAMES IntervalTimeframe(string interval)
+{
+   if(interval == "1m") return PERIOD_M1;
+   if(interval == "1h") return PERIOD_H1;
+   if(interval == "1d") return PERIOD_D1;
+   return PERIOD_CURRENT;
+}
+
+bool ProbeHistoryRange(string symbol, ENUM_TIMEFRAMES timeframe, string interval,
+                       string start_date, string end_date,
+                       datetime &earliest_out, datetime &latest_out, int &count_out, int &error_out)
+{
+   earliest_out = 0; latest_out = 0; count_out = 0; error_out = 0;
+   string normalized_start = start_date;
+   string normalized_end = end_date;
+   StringReplace(normalized_start, "T", " ");
+   StringReplace(normalized_end, "T", " ");
+   int plus_pos = StringFind(normalized_start, "+"); if(plus_pos > 0) normalized_start = StringSubstr(normalized_start, 0, plus_pos);
+   plus_pos = StringFind(normalized_end, "+"); if(plus_pos > 0) normalized_end = StringSubstr(normalized_end, 0, plus_pos);
+   StringReplace(normalized_start, "-", ".");
+   StringReplace(normalized_end, "-", ".");
+   datetime from_time = StringToTime(normalized_start);
+   datetime to_time = StringToTime(normalized_end);
+   if(from_time <= 0 || to_time <= 0 || to_time < from_time) return false;
+
+   MqlRates rates[];
+   ArraySetAsSeries(rates, false);
+   ResetLastError();
+   int copied = CopyRates(symbol, timeframe, from_time, to_time, rates);
+   error_out = GetLastError();
+   if(copied <= 0)
+   {
+      ResetLastError();
+      return true; // confirmed zero availability is a valid probe result
+   }
+   count_out = copied;
+   earliest_out = rates[0].time;
+   latest_out = rates[copied - 1].time;
+   ResetLastError();
+   return true;
+}
+
 void RefreshRepairRequest()
 {
    string path = "/api/market-data/mt5/repair-request.txt?providerKey=" + InpProviderKey +
@@ -606,17 +649,28 @@ void RefreshRepairRequest()
    StringTrimLeft(interval); StringTrimRight(interval);
    string resolved = ResolveProviderSymbol(symbol);
 
-   if(command == "AVAILABILITY" && part_count == 4)
+   if(command == "AVAILABILITY" && part_count == 6)
    {
-      string request_id = parts[3];
-      datetime earliest = 0;
-      bool ok = resolved != "" && SymbolSelect(resolved, true) &&
-                FindEarliestRetrievableM1(resolved, earliest);
+      string start_time = parts[3];
+      string end_time = parts[4];
+      string request_id = parts[5];
+      ENUM_TIMEFRAMES timeframe = IntervalTimeframe(interval);
+      datetime earliest = 0, latest = 0;
+      int available_count = 0, probe_error = 0;
+      bool ok = timeframe != PERIOD_CURRENT && resolved != "" && SymbolSelect(resolved, true) &&
+                ProbeHistoryRange(resolved, timeframe, interval, start_time, end_time,
+                                  earliest, latest, available_count, probe_error);
       string result_path = "/api/market-data/mt5/history-availability?providerKey=" + InpProviderKey +
-                           "&requestId=" + request_id;
-      if(ok && earliest > 0)
-         result_path += "&earliestUtc=" + IsoUtc((datetime)earliest);
+                           "&requestId=" + request_id +
+                           "&candleCount=" + IntegerToString(available_count);
+      if(ok && available_count > 0)
+      {
+         result_path += "&earliestUtc=" + IsoUtc(CandleTimeToUtc(earliest, interval));
+         result_path += "&latestUtc=" + IsoUtc(CandleTimeToUtc(latest, interval));
+      }
       PostJson(result_path, "{}");
+      if(probe_error != 0 && probe_error != 4401)
+         PrintFormat("Axetos MT5 Bridge: %s availability probe failed for %s (%d).", interval, resolved, probe_error);
       return;
    }
 
@@ -633,14 +687,15 @@ void RefreshRepairRequest()
    bool completed = false;
    int copied = 0;
    int copy_error = 0;
-   if(resolved != "" && SymbolSelect(resolved, true))
-      completed = SendCandlesForDateRange(resolved, PERIOD_M1, "1m", start_time, end_time, copied, copy_error, request_id);
+   ENUM_TIMEFRAMES requested_timeframe = IntervalTimeframe(interval);
+   if(requested_timeframe != PERIOD_CURRENT && resolved != "" && SymbolSelect(resolved, true))
+      completed = SendCandlesForDateRange(resolved, requested_timeframe, interval, start_time, end_time, copied, copy_error, request_id);
    bool unavailable = (!completed && copy_error == 4401);
 
    string result_path = "/api/market-data/mt5/repair-result?providerKey=" + InpProviderKey +
                         "&terminalInstanceId=" + g_terminal_id +
                         "&providerSymbol=" + symbol +
-                        "&interval=1m&completed=" + (completed ? "true" : "false") +
+                        "&interval=" + interval + "&completed=" + (completed ? "true" : "false") +
                         "&barsReceived=" + IntegerToString(copied) +
                         "&barsInserted=" + IntegerToString(copied) +
                         "&unavailable=" + (unavailable ? "true" : "false") +

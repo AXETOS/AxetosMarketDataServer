@@ -4,6 +4,10 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.60.13
+
+Version 0.60.13 makes the ten-year MT5 discovery result authoritative for already-complete local coverage. During each M1, H1, and D1 discovery probe, the server compares the provider count and returned earliest/latest boundaries with the local count and local earliest/latest timestamps over the same window. When local coverage fully spans the provider result and contains at least the same number of candles, that timeframe is marked complete immediately and no daily, monthly, yearly, CopyRates, upload, or stored/skipped verification loop is generated. Only timeframes whose discovery comparison proves local coverage incomplete are subdivided into bounded ranges for targeted backfill. Status now exposes provider discovery counts, local discovery counts, and the timeframes completed directly from discovery. MT5 bridge v1.27 is unchanged.
+
 ## Version 0.60.12
 
 Version 0.60.12 fixes live MT5 queue saturation without requiring a server restart. Live tick batches are treated as replaceable snapshots: when the bounded queue is full, the server discards the oldest unprocessed batch and retains the newest batch instead of returning a repeating 503 error. Queue telemetry now exposes dropped/coalesced batch and tick counts. A rare residual saturation response is returned as HTTP 429 with `Retry-After: 5`. MT5 bridge v1.27 recognizes explicit backpressure separately from network failure, pauses only live tick submissions for five seconds, rebuilds the next submission from current symbol snapshots, suppresses stale batches, and logs one congestion and one recovery message. Heartbeats, selection refresh, history discovery, and dedicated history storage continue independently.

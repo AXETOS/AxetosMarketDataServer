@@ -456,6 +456,16 @@ class MarketDataStore:
             ).fetchone()
         return int(row[0]) if row else 0
 
+    def candle_bounds_range(self, provider: str, instrument: str, timeframe: str, start: datetime, end: datetime) -> tuple[datetime | None, datetime | None]:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT MIN(open_time_utc), MAX(open_time_utc) FROM candles WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc>=? AND open_time_utc<=?",
+                (provider, instrument, timeframe, _iso(start), _iso(end)),
+            ).fetchone()
+        if not row or row[0] is None or row[1] is None:
+            return None, None
+        return datetime.fromisoformat(row[0]), datetime.fromisoformat(row[1])
+
     def read_candle_times(self, provider: str, instrument: str, timeframe: str, start: datetime, end: datetime) -> list[datetime]:
         with self.connect() as connection:
             rows = connection.execute("SELECT open_time_utc FROM candles WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc>=? AND open_time_utc<?", (provider, instrument, timeframe, _iso(start), _iso(end))).fetchall()

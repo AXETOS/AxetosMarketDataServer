@@ -10,9 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_release_metadata() -> None:
-    assert __version__ == "0.60.12"
-    assert 'version = "0.60.12"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.60.12" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.60.13"
+    assert 'version = "0.60.13"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.60.13" in (ROOT / "README.md").read_text(encoding="utf-8")
 
 
 def test_mt5_heartbeat_accepts_bridge_camel_case(tmp_path) -> None:

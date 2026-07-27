@@ -203,6 +203,9 @@ def create_app(
         lambda provider, instrument, timeframe, start, end: store.candle_count_range(
             provider, instrument, timeframe, start, end
         ),
+        lambda provider, instrument, timeframe, start, end: store.candle_bounds_range(
+            provider, instrument, timeframe, start, end
+        ),
         on_instrument_completed=rebuild_full_history_derived,
     )
     started_utc = datetime.now(UTC)

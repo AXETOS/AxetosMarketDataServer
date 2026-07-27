@@ -58,6 +58,8 @@ class InstrumentProgress:
     discovery_complete: bool = False
     discovery_boundaries: dict[str, datetime | None] = field(default_factory=dict)
     discovery_counts: dict[str, int] = field(default_factory=dict)
+    discovery_local_counts: dict[str, int] = field(default_factory=dict)
+    discovery_complete_timeframes: set[str] = field(default_factory=set)
 
 
 @dataclass(slots=True)
@@ -82,6 +84,7 @@ class FullHistoryBackfillManager:
     def __init__(
         self,
         local_count: Callable[[str, str, str, datetime, datetime], int],
+        local_bounds: Callable[[str, str, str, datetime, datetime], tuple[datetime | None, datetime | None]] | None = None,
         *,
         on_instrument_completed: Callable[[str, str], None] | None = None,
         pressure_probe: Callable[[], bool] | None = None,
@@ -89,6 +92,7 @@ class FullHistoryBackfillManager:
         request_lease: timedelta = timedelta(seconds=30),
     ) -> None:
         self._local_count = local_count
+        self._local_bounds = local_bounds
         self._lock = threading.RLock()
         self._on_instrument_completed = on_instrument_completed
         self._pressure_probe = pressure_probe
@@ -117,14 +121,14 @@ class FullHistoryBackfillManager:
         h1 = item.discovery_boundaries.get("1h")
         d1 = item.discovery_boundaries.get("1d")
         tiers: list[HistoryTier] = []
-        if m1 is not None and m1 <= now:
+        if m1 is not None and m1 <= now and "1m" not in item.discovery_complete_timeframes:
             tiers.append(HistoryTier("1m", m1, now, timedelta(days=1)))
         h1_end = min(now, m1 - timedelta(hours=1)) if m1 is not None else now
-        if h1 is not None and h1 <= h1_end:
+        if h1 is not None and h1 <= h1_end and "1h" not in item.discovery_complete_timeframes:
             tiers.append(HistoryTier("1h", h1, h1_end, timedelta(days=30)))
         coarse_boundary = h1 if h1 is not None else m1
         d1_end = min(now, coarse_boundary - timedelta(days=1)) if coarse_boundary is not None else now
-        if d1 is not None and d1 <= d1_end:
+        if d1 is not None and d1 <= d1_end and "1d" not in item.discovery_complete_timeframes:
             tiers.append(HistoryTier("1d", d1, d1_end, timedelta(days=365)))
         return tiers
 
@@ -222,14 +226,42 @@ class FullHistoryBackfillManager:
 
             if item.scan_phase == "discovery":
                 boundary = earliest if count > 0 and earliest is not None else None
-                item.discovery_boundaries[item.timeframe] = boundary
-                item.discovery_counts[item.timeframe] = max(0, count)
+                timeframe = item.timeframe
+                provider_count = max(0, count)
+                item.discovery_boundaries[timeframe] = boundary
+                item.discovery_counts[timeframe] = provider_count
+                item.discovery_local_counts[timeframe] = item.local_count
+                coverage_complete = False
                 if boundary is None:
                     item.ranges_unavailable += 1
-                item.last_result = (
-                    f"discovered {item.timeframe} boundary: "
-                    f"{boundary.isoformat() if boundary else 'unavailable'}; bars={max(0, count)}"
-                )
+                elif item.local_count >= provider_count:
+                    local_earliest: datetime | None = None
+                    local_latest: datetime | None = None
+                    if self._local_bounds is not None:
+                        local_earliest, local_latest = self._local_bounds(
+                            provider_key, item.instrument, timeframe, item.cursor_start, item.current_end
+                        )
+                    coverage_complete = (
+                        self._local_bounds is not None
+                        and local_earliest is not None and local_latest is not None
+                        and local_earliest <= boundary
+                        and latest is not None and local_latest >= latest
+                    )
+                if coverage_complete:
+                    item.discovery_complete_timeframes.add(timeframe)
+                    item.ranges_skipped_existing += 1
+                    item.last_result = (
+                        f"discovered {timeframe} coverage already complete: "
+                        f"provider={provider_count}, local={item.local_count}; no range checks required"
+                    )
+                else:
+                    missing_estimate = max(0, provider_count - item.local_count)
+                    item.last_result = (
+                        f"discovered {timeframe} boundary: "
+                        f"{boundary.isoformat() if boundary else 'unavailable'}; "
+                        f"provider={provider_count}, local={item.local_count}, "
+                        f"missing_at_least={missing_estimate}"
+                    )
                 item.discovery_index += 1
                 item.cursor_start = None
                 item.current_end = None
@@ -245,8 +277,10 @@ class FullHistoryBackfillManager:
                     self._tiers_by_job[job.job_id] = self._build_tiers(item)
                     self._ensure_tier(job, item)
                 if boundary is None:
-                    return f"UNAVAILABLE|{max(0, count)}|0"
-                return f"DISCOVERED|{max(0, count)}|{boundary.isoformat()}"
+                    return f"UNAVAILABLE|{provider_count}|{item.local_count}"
+                if coverage_complete:
+                    return f"DISCOVERED_COMPLETE|{provider_count}|{item.local_count}|{boundary.isoformat()}"
+                return f"DISCOVERED_MISSING|{provider_count}|{item.local_count}|{boundary.isoformat()}"
 
             if item.scan_phase == "coarse":
                 local_count = item.local_count
@@ -520,6 +554,8 @@ class FullHistoryBackfillManager:
                         for key, value in item.discovery_boundaries.items()
                     },
                     "discovery_counts": dict(item.discovery_counts),
+                    "discovery_local_counts": dict(item.discovery_local_counts),
+                    "discovery_complete_timeframes": sorted(item.discovery_complete_timeframes),
                 }
                 for item in job.instruments
             ],

@@ -20,7 +20,7 @@ def test_discovers_all_three_boundaries_before_planning_downloads() -> None:
     assert p[:3] == ['DISCOVER', 'SOLUSD', '1m']
     assert datetime.fromisoformat(p[4]) - datetime.fromisoformat(p[3]) >= timedelta(days=3650)
     m1_boundary = now - timedelta(days=40)
-    assert _answer(manager, 'ICMarkets.MT5', m1, m1_boundary, 50000).startswith('DISCOVERED|50000|')
+    assert _answer(manager, 'ICMarkets.MT5', m1, m1_boundary, 50000).startswith('DISCOVERED_MISSING|50000|0|')
 
     h1 = manager.next_request('ICMarkets.MT5')
     assert h1.split('|')[:3] == ['DISCOVER', 'SOLUSD', '1h']

@@ -4,6 +4,10 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.60.9
+
+Version 0.60.9 replaces the wasteful day-by-day M1 discovery scan with a coarse-to-fine planner. Each M1 history window is first probed as one month-sized availability range. If the provider returns no candles, the entire month is marked unavailable and the coordinator advances directly to the next timeframe instead of probing every day. If the month contains provider history but local coverage is incomplete, the coordinator enters drill-down mode and compares/backfills only the daily ranges inside that confirmed month. Fully local months are skipped from the coarse result without daily probes. MT5 bridge v1.25 also reduces availability synchronization retries from ten to three, preventing empty broker-history ranges from consuming roughly five minutes apiece. Exactly one history operation remains in flight per provider, and the dedicated history ingestion process remains isolated from live ticks.
+
 ## Version 0.60.8
 
 Version 0.60.8 moves targeted MT5 full-history candle persistence into a dedicated operating-system process. The live API process validates and sanitizes the bridge payload, enqueues one bounded history job, and waits for the worker's explicit stored/skipped acknowledgement. The history worker owns a separate database connection and insert-only transaction, so live tick ingestion, queue pressure, and CPU scheduling in the web process cannot execute the historical write path. Exactly one full-history operation remains in flight per provider, and the coordinator advances only after the worker acknowledgement and bridge repair-result acknowledgement. The bridge status endpoint now reports dedicated history-process PID, running state, queued/completed/failed jobs, and the latest error. MT5 bridge v1.24 is unchanged.

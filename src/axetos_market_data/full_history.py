@@ -15,6 +15,7 @@ class HistoryTier:
     start: datetime
     end: datetime
     batch_span: timedelta
+    availability_span: timedelta | None = None
 
 
 @dataclass(slots=True)
@@ -47,6 +48,12 @@ class InstrumentProgress:
     retry_count: int = 0
     error: str | None = None
     last_error_code: int | None = None
+    scan_phase: str = "fine"
+    coarse_start: datetime | None = None
+    coarse_end: datetime | None = None
+    fine_end: datetime | None = None
+    coarse_ranges_probed: int = 0
+    fine_ranges_probed: int = 0
 
 
 @dataclass(slots=True)
@@ -99,7 +106,11 @@ class FullHistoryBackfillManager:
         # coverage without millions of M1 rows.
         deep_start = datetime(1970, 1, 1, tzinfo=now.tzinfo)
         return [
-            HistoryTier("1m", recent_start, now, timedelta(days=1)),
+            # M1 first performs a coarse month-sized availability probe. Only a
+            # month that actually contains provider candles is subdivided into
+            # daily comparison/backfill ranges. Empty months are skipped in one
+            # operation instead of probing every day.
+            HistoryTier("1m", recent_start, now, timedelta(days=1), timedelta(days=31)),
             HistoryTier("1h", hourly_start, recent_start - timedelta(hours=1), timedelta(days=30)),
             HistoryTier("1d", deep_start, hourly_start - timedelta(days=1), timedelta(days=365)),
         ]
@@ -166,6 +177,10 @@ class FullHistoryBackfillManager:
             if item is None or job is None:
                 return "IGNORED"
             item.ranges_probed += 1
+            if item.scan_phase == "coarse":
+                item.coarse_ranges_probed += 1
+            else:
+                item.fine_ranges_probed += 1
             item.available_count = max(0, count)
             item.earliest_available = earliest
             item.latest_available = latest
@@ -177,7 +192,34 @@ class FullHistoryBackfillManager:
             item.current_request_id = None
             item.request_kind = None
             item.dispatched_at = None
-            item.last_result = f"availability confirmed: provider={count}, local={item.local_count}"
+            item.last_result = (
+                f"{item.scan_phase} availability confirmed: provider={count}, local={item.local_count}"
+            )
+
+            if item.scan_phase == "coarse":
+                local_count = item.local_count
+                if count <= 0 or earliest is None or latest is None:
+                    item.ranges_unavailable += 1
+                    self._advance_coarse_range(job, item)
+                    return f"UNAVAILABLE|{count}|{local_count}"
+                if local_count >= count:
+                    item.ranges_skipped_existing += 1
+                    self._advance_coarse_range(job, item)
+                    return f"SKIP|{count}|{local_count}"
+                # Provider data exists and local coverage is incomplete. Drill
+                # into daily M1 ranges only inside this confirmed month.
+                assert item.coarse_start and item.coarse_end
+                item.scan_phase = "fine"
+                item.cursor_start = item.coarse_start
+                item.fine_end = item.coarse_end
+                item.current_end = min(
+                    item.fine_end, item.cursor_start + self._active_tier(job, item).batch_span - self._step(item.timeframe)
+                )
+                item.available_count = 0
+                item.local_count = 0
+                item.last_result = f"coarse range contains {count} provider candles; drilling into daily ranges"
+                return f"DRILLDOWN|{count}|{local_count}"
+
             if count <= 0 or earliest is None or latest is None:
                 item.ranges_unavailable += 1
                 local_count = item.local_count
@@ -253,7 +295,18 @@ class FullHistoryBackfillManager:
                 item.tier_end = tier.end
                 if item.cursor_start is None:
                     item.cursor_start = tier.start
-                item.current_end = min(tier.end, item.cursor_start + tier.batch_span - self._step(tier.timeframe))
+                    if tier.availability_span is not None:
+                        item.scan_phase = "coarse"
+                        item.coarse_start = tier.start
+                        item.coarse_end = min(
+                            tier.end, tier.start + tier.availability_span - self._step(tier.timeframe)
+                        )
+                        item.current_end = item.coarse_end
+                    else:
+                        item.scan_phase = "fine"
+                        item.current_end = min(
+                            tier.end, item.cursor_start + tier.batch_span - self._step(tier.timeframe)
+                        )
                 item.status = "queued"
                 return
             item.tier_index += 1
@@ -270,14 +323,57 @@ class FullHistoryBackfillManager:
         item.dispatch_attempts = 0
         item.available_count = 0
         item.local_count = 0
+        if item.scan_phase == "fine" and item.fine_end is not None and item.cursor_start > item.fine_end:
+            self._advance_coarse_range(job, item)
+            return
         if item.cursor_start > item.tier_end:
-            item.tier_index += 1
-            item.cursor_start = None
-            item.current_end = None
-            item.timeframe = None
-            item.tier_start = None
-            item.tier_end = None
+            self._complete_tier(item)
+        else:
+            tier = self._active_tier(job, item)
+            item.current_end = min(
+                item.tier_end, item.cursor_start + tier.batch_span - self._step(item.timeframe)
+            )
         self._ensure_tier(job, item)
+
+    def _advance_coarse_range(self, job: FullHistoryJob, item: InstrumentProgress) -> None:
+        assert item.timeframe and item.coarse_end and item.tier_end
+        next_start = item.coarse_end + self._step(item.timeframe)
+        item.current_request_id = None
+        item.request_kind = None
+        item.dispatched_at = None
+        item.dispatch_attempts = 0
+        item.available_count = 0
+        item.local_count = 0
+        item.fine_end = None
+        if next_start > item.tier_end:
+            self._complete_tier(item)
+            self._ensure_tier(job, item)
+            return
+        tier = self._active_tier(job, item)
+        assert tier.availability_span is not None
+        item.scan_phase = "coarse"
+        item.coarse_start = next_start
+        item.coarse_end = min(
+            item.tier_end, next_start + tier.availability_span - self._step(item.timeframe)
+        )
+        item.cursor_start = item.coarse_start
+        item.current_end = item.coarse_end
+        self._ensure_tier(job, item)
+
+    def _complete_tier(self, item: InstrumentProgress) -> None:
+        item.tier_index += 1
+        item.cursor_start = None
+        item.current_end = None
+        item.timeframe = None
+        item.tier_start = None
+        item.tier_end = None
+        item.coarse_start = None
+        item.coarse_end = None
+        item.fine_end = None
+        item.scan_phase = "fine"
+
+    def _active_tier(self, job: FullHistoryJob, item: InstrumentProgress) -> HistoryTier:
+        return self._tiers_by_job[job.job_id][item.tier_index]
 
     @staticmethod
     def _step(timeframe: str) -> timedelta:
@@ -359,6 +455,12 @@ class FullHistoryBackfillManager:
                     "dispatched_at": item.dispatched_at.isoformat() if item.dispatched_at else None,
                     "dispatch_attempts": item.dispatch_attempts,
                     "last_result": item.last_result,
+                    "scan_phase": item.scan_phase,
+                    "coarse_start": item.coarse_start.isoformat() if item.coarse_start else None,
+                    "coarse_end": item.coarse_end.isoformat() if item.coarse_end else None,
+                    "fine_end": item.fine_end.isoformat() if item.fine_end else None,
+                    "coarse_ranges_probed": item.coarse_ranges_probed,
+                    "fine_ranges_probed": item.fine_ranges_probed,
                 }
                 for item in job.instruments
             ],

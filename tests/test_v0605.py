@@ -6,12 +6,22 @@ from axetos_market_data.full_history import FullHistoryBackfillManager
 
 def test_one_missing_candle_dispatches_backfill_and_waits_for_storage_ack() -> None:
     now = datetime(2026, 7, 27, tzinfo=UTC)
+
+    def local_count(_provider, _instrument, _timeframe, start, end):
+        return 1400 if end - start > timedelta(days=2) else 1434
+
     manager = FullHistoryBackfillManager(
-        lambda *_args: 1434,
+        local_count,
         pressure_probe=lambda: False,
         now_factory=lambda: now,
     )
     manager.start("ICMarkets.MT5", [("SOLUSD", "SOL/USD")])
+
+    coarse = manager.next_request("ICMarkets.MT5").split("|")
+    coarse_decision = manager.availability_result(
+        "ICMarkets.MT5", coarse[5], earliest=now - timedelta(days=30), latest=now, count=43000
+    )
+    assert coarse_decision == "DRILLDOWN|43000|1400"
 
     availability = manager.next_request("ICMarkets.MT5")
     availability_parts = availability.split("|")
@@ -54,7 +64,7 @@ def test_bridge_and_server_expose_explicit_storage_handshake() -> None:
     web = Path("src/axetos_market_data/web.py").read_text(encoding="utf-8")
     manager = Path("src/axetos_market_data/full_history.py").read_text(encoding="utf-8")
 
-    assert '#property version   "1.24"' in bridge
+    assert '#property version   "1.25"' in bridge
     assert "download started" in bridge
     assert "CopyRates returned" in bridge
     assert "server stored %d and skipped %d" in bridge

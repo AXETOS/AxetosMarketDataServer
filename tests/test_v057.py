@@ -20,10 +20,17 @@ def test_tiered_history_probes_exact_range_before_downloading(tmp_path):
     parts = probe.split("|")
     assert parts[:3] == ["AVAILABILITY", "EURUSD", "1m"]
     request_id = parts[-1]
-    manager.availability_result(
+    decision = manager.availability_result(
         "ICMarkets.MT5", request_id,
-        earliest=datetime.fromisoformat(parts[3]), latest=datetime.fromisoformat(parts[4]), count=1440,
+        earliest=datetime.fromisoformat(parts[3]), latest=datetime.fromisoformat(parts[4]), count=43200,
     )
+    assert decision.startswith("DRILLDOWN|")
+    fine_probe = manager.next_request("ICMarkets.MT5").split("|")
+    fine_decision = manager.availability_result(
+        "ICMarkets.MT5", fine_probe[5],
+        earliest=datetime.fromisoformat(fine_probe[3]), latest=datetime.fromisoformat(fine_probe[4]), count=1440,
+    )
+    assert fine_decision == "BACKFILL|1440|0"
     download = manager.next_request("ICMarkets.MT5")
     assert download.split("|")[:3] == ["BACKFILL", "EURUSD", "1m"]
 

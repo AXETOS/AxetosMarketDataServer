@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.24"
+#property version   "1.25"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -44,7 +44,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.24: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.25: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -722,13 +722,13 @@ void RefreshRepairRequest()
       // collection is not blocked by a synchronous wait.
       bool history_sync_pending = (available_count <= 0 &&
                                    (probe_error == 4401 || probe_error == 4403 || probe_error == 4405));
-      if(history_sync_pending && g_pending_probe_attempts < 10)
+      if(history_sync_pending && g_pending_probe_attempts < 3)
       {
          g_pending_probe_attempts++;
          datetime probe_now = TimeCurrent();
          if(g_last_probe_progress_log == 0 || probe_now - g_last_probe_progress_log >= 10)
          {
-            PrintFormat("Axetos MT5 Bridge: waiting for MT5 history sync; %s %s, %s through %s, attempt %d/10, error=%d.",
+            PrintFormat("Axetos MT5 Bridge: waiting for MT5 history sync; %s %s, %s through %s, attempt %d/3, error=%d.",
                         resolved, interval, start_time, end_time, g_pending_probe_attempts, probe_error);
             g_last_probe_progress_log = probe_now;
          }

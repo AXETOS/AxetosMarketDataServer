@@ -26,11 +26,20 @@ def test_backfill_command_dispatch_is_not_stranded_by_live_queue_pressure() -> N
     manager.start("ICMarkets.MT5", [("EURUSD", "EUR/USD")])
     availability = manager.next_request("ICMarkets.MT5")
     request_id = availability.rsplit("|", 1)[1]
-    manager.availability_result(
+    decision = manager.availability_result(
         "ICMarkets.MT5",
         request_id,
         earliest=datetime(2026, 6, 27, tzinfo=UTC),
-        latest=datetime(2026, 6, 27, 23, 59, tzinfo=UTC),
+        latest=datetime(2026, 7, 27, tzinfo=UTC),
+        count=43200,
+    )
+    assert decision.startswith("DRILLDOWN|")
+    fine = manager.next_request("ICMarkets.MT5").split("|")
+    manager.availability_result(
+        "ICMarkets.MT5",
+        fine[5],
+        earliest=datetime.fromisoformat(fine[3]),
+        latest=datetime.fromisoformat(fine[4]),
         count=1440,
     )
 

@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.18"
+#property version   "1.19"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -22,6 +22,8 @@ string g_terminal_id = "";
 int g_http_consecutive_failures = 0;
 datetime g_http_retry_after = 0;
 int g_http_suppressed_requests = 0;
+datetime g_last_history_progress_log = 0;
+bool g_history_job_seen = false;
 
 // Provider-native week/month history is never requested. The server builds
 // Monday-Sunday weeks and true calendar months exclusively from canonical daily data.
@@ -39,7 +41,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.18: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.19: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -655,6 +657,11 @@ void RefreshRepairRequest()
       string end_time = parts[4];
       string request_id = parts[5];
       ENUM_TIMEFRAMES timeframe = IntervalTimeframe(interval);
+      if(!g_history_job_seen)
+      {
+         PrintFormat("Axetos MT5 Bridge: full-history job received; probing %s %s.", resolved, interval);
+         g_history_job_seen = true;
+      }
       datetime earliest = 0, latest = 0;
       int available_count = 0, probe_error = 0;
       bool ok = timeframe != PERIOD_CURRENT && resolved != "" && SymbolSelect(resolved, true) &&
@@ -684,6 +691,15 @@ void RefreshRepairRequest()
    StringTrimLeft(end_time); StringTrimRight(end_time);
    StringTrimLeft(request_id); StringTrimRight(request_id);
 
+   datetime progress_now = TimeCurrent();
+   bool logged_progress = false;
+   if(g_last_history_progress_log == 0 || progress_now - g_last_history_progress_log >= 10)
+   {
+      PrintFormat("Axetos MT5 Bridge: backfill %s %s, %s through %s.", resolved, interval, start_time, end_time);
+      g_last_history_progress_log = progress_now;
+      logged_progress = true;
+   }
+
    bool completed = false;
    int copied = 0;
    int copy_error = 0;
@@ -702,6 +718,10 @@ void RefreshRepairRequest()
                         "&errorCode=" + IntegerToString(copy_error) +
                         "&requestId=" + request_id;
    PostJson(result_path, "{}");
+   if(completed && logged_progress)
+      PrintFormat("Axetos MT5 Bridge: backfill batch complete for %s %s; bars=%d.", resolved, interval, copied);
+   else if(!completed)
+      PrintFormat("Axetos MT5 Bridge: backfill batch failed for %s %s; error=%d.", resolved, interval, copy_error);
 }
 
 void RefreshServerSelection()

@@ -4,7 +4,9 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
-## Version 0.60.0
+## Version 0.60.1
+
+Version 0.60.1 fixes full-history dispatch so read-only MT5 availability probes are never blocked by live-ingestion queue pressure. Actual history downloads remain throttled before database writes. MT5 bridge v1.19 reports when a full-history job is received and emits controlled backfill progress and batch-result messages.
 
 Version 0.60.0 replaces the all-M1 full-history import with an availability-aware tiered background backfill. The server probes the exact MT5 symbol, timeframe, and date range before every download, compares the provider candle count with local coverage, and requests a batch only when candles are confirmed available and missing locally. Recent history uses M1, medium history uses H1, and deep history uses D1. Existing source candles are inserted with `INSERT OR IGNORE` and are never overwritten. MT5 bridge v1.18 supports exact-range availability probes and M1/H1/D1 background batches while live ticks remain the highest-priority workload.
 

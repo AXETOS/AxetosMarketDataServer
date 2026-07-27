@@ -1,0 +1,42 @@
+from datetime import UTC, datetime
+
+from axetos_market_data.full_history import FullHistoryBackfillManager
+
+
+def test_availability_probe_is_not_blocked_by_live_queue_pressure() -> None:
+    manager = FullHistoryBackfillManager(
+        lambda *_args: 0,
+        pressure_probe=lambda: False,
+        now_factory=lambda: datetime(2026, 7, 27, tzinfo=UTC),
+    )
+    manager.start("ICMarkets.MT5", [("EURUSD", "EUR/USD")])
+
+    request = manager.next_request("ICMarkets.MT5")
+
+    assert request.startswith("AVAILABILITY|EURUSD|1m|")
+
+
+def test_backfill_download_is_throttled_by_live_queue_pressure() -> None:
+    pressure = {"allow": True}
+    manager = FullHistoryBackfillManager(
+        lambda *_args: 0,
+        pressure_probe=lambda: pressure["allow"],
+        now_factory=lambda: datetime(2026, 7, 27, tzinfo=UTC),
+    )
+    manager.start("ICMarkets.MT5", [("EURUSD", "EUR/USD")])
+    availability = manager.next_request("ICMarkets.MT5")
+    request_id = availability.rsplit("|", 1)[1]
+    manager.availability_result(
+        "ICMarkets.MT5",
+        request_id,
+        earliest=datetime(2026, 6, 27, tzinfo=UTC),
+        latest=datetime(2026, 6, 27, 23, 59, tzinfo=UTC),
+        count=1440,
+    )
+
+    pressure["allow"] = False
+    assert manager.next_request("ICMarkets.MT5") == ""
+    assert manager.status("ICMarkets.MT5")["jobs"][0]["instruments"][0]["status"] == "throttled"
+
+    pressure["allow"] = True
+    assert manager.next_request("ICMarkets.MT5").startswith("BACKFILL|EURUSD|1m|")

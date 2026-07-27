@@ -117,8 +117,6 @@ class FullHistoryBackfillManager:
 
     def next_request(self, provider_key: str) -> str:
         with self._lock:
-            if self._pressure_probe is not None and not self._pressure_probe():
-                return ""
             job = self._active_job(provider_key)
             if job is None:
                 return ""
@@ -127,6 +125,16 @@ class FullHistoryBackfillManager:
                 return ""
             item = job.instruments[job.active_index]
             if item.current_request_id:
+                # Availability probes are read-only MT5 queries and must never be
+                # blocked by SQLite/live-ingestion pressure. Only actual historical
+                # downloads are throttled because they result in database writes.
+                if (
+                    item.request_kind == "backfill"
+                    and self._pressure_probe is not None
+                    and not self._pressure_probe()
+                ):
+                    item.status = "throttled"
+                    return ""
                 return self._format_request(item)
             self._ensure_tier(job, item)
             if item.status == "completed":

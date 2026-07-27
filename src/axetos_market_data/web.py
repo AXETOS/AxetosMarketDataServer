@@ -39,6 +39,7 @@ from .backups import BackupError, BackupService
 from .benchmark_jobs import BenchmarkJobManager
 from .bridge import (Mt5BridgeService, BridgeHeartbeatRequest, BridgeInstrumentsRequest, BridgeTicksRequest, BridgeQuotesRequest, BridgeCandlesRequest, InstrumentSelectionRequest)
 from .full_history import FullHistoryBackfillManager
+from .history_worker import HistoryIngestionProcess
 
 
 class BackfillRequest(BaseModel):
@@ -183,6 +184,7 @@ def create_app(
     config_store = ConfigurationStore(configuration_path)
     secret_store = SecretStore(Path(configuration_path).parent / "mt5_secrets.json")
     supervisor = ProviderSupervisor(config_store, store, secret_store)
+    history_process = HistoryIngestionProcess(store.database_target)
     scheduler = MaintenanceScheduler(store)
     backups = BackupService(database_path, configuration_path)
     benchmark_jobs = BenchmarkJobManager()
@@ -207,12 +209,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        history_process.start()
         supervisor.load()
         scheduler.start()
         yield
         scheduler.stop()
         supervisor.shutdown()
         bridge.shutdown()
+        history_process.shutdown()
 
     security = SecuritySettings.from_environment()
 
@@ -288,12 +292,14 @@ def create_app(
         store,
         heartbeat_sink=supervisor.record_bridge_heartbeat,
         observation_sink=supervisor.record_bridge_observation,
+        history_process=history_process,
     )
     full_history.set_pressure_probe(bridge.can_run_background_write)
     quality = CandleQualityService(store)
     events = OperationalEventService(store)
     calendar = MarketCalendar()
     app.state.bridge = bridge
+    app.state.history_process = history_process
     app.state.quality = quality
     app.state.events = events
     app.state.calendar = calendar
@@ -381,7 +387,7 @@ def create_app(
 
     @app.get("/api/market-data/mt5/bridge/status")
     def bridge_status() -> dict[str, object]:
-        return {**store.bridge_status(), "queue": bridge.view()}
+        return {**store.bridge_status(), "queue": bridge.view(), "history_process": history_process.view()}
 
     @app.post("/api/market-data/ingest/mt5/heartbeat")
     def bridge_heartbeat(request: BridgeHeartbeatRequest) -> dict[str, object]:

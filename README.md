@@ -4,6 +4,10 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.60.8
+
+Version 0.60.8 moves targeted MT5 full-history candle persistence into a dedicated operating-system process. The live API process validates and sanitizes the bridge payload, enqueues one bounded history job, and waits for the worker's explicit stored/skipped acknowledgement. The history worker owns a separate database connection and insert-only transaction, so live tick ingestion, queue pressure, and CPU scheduling in the web process cannot execute the historical write path. Exactly one full-history operation remains in flight per provider, and the coordinator advances only after the worker acknowledgement and bridge repair-result acknowledgement. The bridge status endpoint now reports dedicated history-process PID, running state, queued/completed/failed jobs, and the latest error. MT5 bridge v1.24 is unchanged.
+
 ## Version 0.60.7
 
 Version 0.60.7 fixes the actual cause of the MT5 history-upload timeout. Payload size was not the blocker: even a 100-candle chunk stalled because the synchronous candle-ingest handler waited until the live tick queue contained at most two batches. During an active market that condition can remain false indefinitely, so MT5 reached its WebRequest timeout (`HTTP=1003`, terminal error `5203`) while the server was deliberately sleeping before the first database write. Full-history dispatch remains pressure-gated before a range is requested, but an upload that has already been dispatched now performs bounded, insert-only transactions immediately and returns an explicit stored/skipped acknowledgement. Live ticks retain their independent ingestion queue and can run between historical transactions. MT5 bridge v1.24 is unchanged.

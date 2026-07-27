@@ -15,6 +15,7 @@ from .clock import ensure_server_local, server_now
 from .domain import Candle, Tick
 from .service import MarketDataService
 from .storage import MarketDataStore
+from .history_worker import HistoryIngestionProcess
 from .symbols import SymbolResolver
 
 
@@ -125,11 +126,13 @@ class Mt5BridgeService:
         max_queue_batches: int = 1000,
         heartbeat_sink: Callable[[str, dict[str, object]], None] | None = None,
         observation_sink: Callable[[Tick, bool], None] | None = None,
+        history_process: HistoryIngestionProcess | None = None,
     ) -> None:
         self.store = store
         self.symbols = SymbolResolver(store)
         self._heartbeat_sink = heartbeat_sink
         self._observation_sink = observation_sink
+        self._history_process = history_process
         self._queue: queue.Queue[BridgeTicksRequest | None] = queue.Queue(maxsize=max_queue_batches)
         self.stats = QueueStats()
         self._service = MarketDataService(self.store)
@@ -195,26 +198,11 @@ class Mt5BridgeService:
         return self._queue.qsize() <= 2
 
     def _insert_historical_low_priority(self, candles: list[Candle]) -> int:
-        """Persist an already-dispatched history upload without queue-starvation.
-
-        Dispatch is pressure-gated by ``FullHistoryCoordinator`` before MT5 is asked
-        to download a range. Once the bridge POST is in progress, however, waiting
-        for the live queue to become almost empty can deadlock the synchronous HTTP
-        request: a continuously active market may keep more than two batches queued
-        forever, causing MT5 WebRequest to time out even for a 100-candle payload.
-
-        Historical rows use one short insert-only transaction per bounded chunk. Live
-        tick ingestion remains on its dedicated queue and can run between chunks.
-        """
-        written = 0
-        chunk_size = 250
-        for offset in range(0, len(candles), chunk_size):
-            written += self.store.insert_candles_missing(candles[offset:offset + chunk_size])
-            # Yield after the completed transaction; never wait inside the HTTP request
-            # for an arbitrary queue-depth condition that may never become true.
-            if offset + chunk_size < len(candles):
-                time.sleep(0)
-        return written
+        """Submit targeted BACKFILL storage outside the live queue process."""
+        if self._history_process is None:
+            # Compatibility fallback for direct service construction in unit tests.
+            return self.store.insert_candles_missing(candles)
+        return self._history_process.insert_missing(candles)
 
     def quotes(self, request: BridgeQuotesRequest) -> int:
         """Persist provider-scoped quote snapshots for display only.

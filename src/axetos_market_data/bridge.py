@@ -195,15 +195,25 @@ class Mt5BridgeService:
         return self._queue.qsize() <= 2
 
     def _insert_historical_low_priority(self, candles: list[Candle]) -> int:
+        """Persist an already-dispatched history upload without queue-starvation.
+
+        Dispatch is pressure-gated by ``FullHistoryCoordinator`` before MT5 is asked
+        to download a range. Once the bridge POST is in progress, however, waiting
+        for the live queue to become almost empty can deadlock the synchronous HTTP
+        request: a continuously active market may keep more than two batches queued
+        forever, causing MT5 WebRequest to time out even for a 100-candle payload.
+
+        Historical rows use one short insert-only transaction per bounded chunk. Live
+        tick ingestion remains on its dedicated queue and can run between chunks.
+        """
         written = 0
         chunk_size = 250
         for offset in range(0, len(candles), chunk_size):
-            while not self.can_run_background_write():
-                time.sleep(0.05)
             written += self.store.insert_candles_missing(candles[offset:offset + chunk_size])
-            # Release the SQLite writer between chunks so live tick/candle commits and
-            # quote reads remain responsive even during multi-year imports.
-            time.sleep(0.01)
+            # Yield after the completed transaction; never wait inside the HTTP request
+            # for an arbitrary queue-depth condition that may never become true.
+            if offset + chunk_size < len(candles):
+                time.sleep(0)
         return written
 
     def quotes(self, request: BridgeQuotesRequest) -> int:

@@ -4,7 +4,7 @@ from pathlib import Path
 from axetos_market_data.full_history import FullHistoryBackfillManager
 
 
-def test_empty_m1_month_skips_directly_to_hourly_tier() -> None:
+def test_empty_m1_tier_skips_directly_to_hourly_tier() -> None:
     now = datetime(2026, 7, 27, 21, 0, tzinfo=UTC)
     manager = FullHistoryBackfillManager(lambda *_args: 0, now_factory=lambda: now)
     manager.start("ICMarkets.MT5", [("SOLUSD", "SOL/USD")])
@@ -25,7 +25,7 @@ def test_empty_m1_month_skips_directly_to_hourly_tier() -> None:
     assert status["fine_ranges_probed"] == 0
 
 
-def test_m1_month_with_missing_data_drills_into_daily_ranges() -> None:
+def test_m1_tier_with_missing_data_drills_into_daily_ranges() -> None:
     now = datetime(2026, 7, 27, 21, 0, tzinfo=UTC)
 
     def local_count(_provider: str, _instrument: str, _timeframe: str, start: datetime, end: datetime) -> int:

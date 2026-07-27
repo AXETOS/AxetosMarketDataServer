@@ -105,14 +105,17 @@ class FullHistoryBackfillManager:
         # D1 availability is cheap to probe deeply and provides honest long-range
         # coverage without millions of M1 rows.
         deep_start = datetime(1970, 1, 1, tzinfo=now.tzinfo)
+        hourly_end = recent_start - timedelta(hours=1)
+        daily_end = hourly_start - timedelta(days=1)
         return [
-            # M1 first performs a coarse month-sized availability probe. Only a
-            # month that actually contains provider candles is subdivided into
-            # daily comparison/backfill ranges. Empty months are skipped in one
-            # operation instead of probing every day.
-            HistoryTier("1m", recent_start, now, timedelta(days=1), timedelta(days=31)),
-            HistoryTier("1h", hourly_start, recent_start - timedelta(hours=1), timedelta(days=30)),
-            HistoryTier("1d", deep_start, hourly_start - timedelta(days=1), timedelta(days=365)),
+            # Every tier starts with one broad provider-availability probe across
+            # the complete tier. Only a tier that actually contains provider data
+            # is subdivided into its normal storage batches. This prevents an
+            # unavailable H1 or D1 tier from being crawled month by month/year by
+            # year merely to rediscover the same absence repeatedly.
+            HistoryTier("1m", recent_start, now, timedelta(days=1), now - recent_start + timedelta(minutes=1)),
+            HistoryTier("1h", hourly_start, hourly_end, timedelta(days=30), hourly_end - hourly_start + timedelta(hours=1)),
+            HistoryTier("1d", deep_start, daily_end, timedelta(days=365), daily_end - deep_start + timedelta(days=1)),
         ]
 
     def start(self, provider_key: str, symbols: list[tuple[str, str]]) -> dict[str, object]:
@@ -207,7 +210,8 @@ class FullHistoryBackfillManager:
                     self._advance_coarse_range(job, item)
                     return f"SKIP|{count}|{local_count}"
                 # Provider data exists and local coverage is incomplete. Drill
-                # into daily M1 ranges only inside this confirmed month.
+                # into the tier's bounded fine ranges only after the broad probe
+                # has established that the provider actually has history.
                 assert item.coarse_start and item.coarse_end
                 item.scan_phase = "fine"
                 item.cursor_start = item.coarse_start
@@ -217,7 +221,10 @@ class FullHistoryBackfillManager:
                 )
                 item.available_count = 0
                 item.local_count = 0
-                item.last_result = f"coarse range contains {count} provider candles; drilling into daily ranges"
+                item.last_result = (
+                    f"coarse {item.timeframe} tier contains {count} provider candles; "
+                    f"drilling into bounded ranges"
+                )
                 return f"DRILLDOWN|{count}|{local_count}"
 
             if count <= 0 or earliest is None or latest is None:

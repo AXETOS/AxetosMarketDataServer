@@ -17,7 +17,7 @@ def _provider_payload() -> dict[str, object]:
 
 
 def test_version_022() -> None:
-    assert __version__ == "0.60.11"
+    assert __version__ == "0.60.12"
 
 
 def test_duplicate_canonical_mapping_is_rejected_and_annotated(tmp_path) -> None:

@@ -62,7 +62,7 @@ def test_unavailable_timeframe_is_omitted_from_plan() -> None:
 
 def test_bridge_v126_understands_discovery_command_and_logs_boundaries() -> None:
     source = Path('bridges/mt5/Experts/AxetosMarketDataBridge.mq5').read_text(encoding='utf-8')
-    assert '#property version   "1.26"' in source
+    assert '#property version   "1.27"' in source
     assert 'command == "AVAILABILITY" || command == "DISCOVER"' in source
     assert 'discovering available %s history' in source
     assert 'history discovery for %s completed' in source

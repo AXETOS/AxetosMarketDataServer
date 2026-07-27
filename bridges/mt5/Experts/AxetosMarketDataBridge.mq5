@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.26"
+#property version   "1.27"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -22,6 +22,9 @@ string g_terminal_id = "";
 int g_http_consecutive_failures = 0;
 datetime g_http_retry_after = 0;
 int g_http_suppressed_requests = 0;
+datetime g_tick_retry_after = 0;
+bool g_tick_congested = false;
+int g_tick_suppressed_batches = 0;
 datetime g_last_history_progress_log = 0;
 bool g_history_job_seen = false;
 string g_pending_probe_request_id = "";
@@ -44,7 +47,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.26: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.27: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -395,6 +398,12 @@ string JsonNumber(double value)
 
 void SendCurrentTicks()
 {
+   if(g_tick_retry_after > 0 && TimeLocal() < g_tick_retry_after)
+   {
+      g_tick_suppressed_batches++;
+      return;
+   }
+
    string items = "";
    for(int i = 0; i < ArraySize(g_symbols); i++)
    {
@@ -958,6 +967,32 @@ void RecordHttpFailure(string method, string path, int status, int error_code, s
    g_http_suppressed_requests = 0;
 }
 
+bool IsTickBackpressure(string path, int status, string response)
+{
+   if(path != "/api/market-data/ingest/mt5/ticks")
+      return false;
+   if(status == 429)
+      return true;
+   return status == 503 && (StringFind(response, "queue") >= 0 || StringFind(response, "saturated") >= 0);
+}
+
+void RecordTickBackpressure()
+{
+   g_tick_retry_after = TimeLocal() + 5;
+   if(!g_tick_congested)
+      Print("Axetos MT5 Bridge: live ingestion congested; pausing tick submissions for 5s and retaining only fresh snapshots.");
+   g_tick_congested = true;
+}
+
+void RecordTickSuccess()
+{
+   if(g_tick_congested)
+      PrintFormat("Axetos MT5 Bridge: live ingestion resumed; %d stale tick batch(es) suppressed.", g_tick_suppressed_batches);
+   g_tick_congested = false;
+   g_tick_retry_after = 0;
+   g_tick_suppressed_batches = 0;
+}
+
 bool GetText(string path, string &response)
 {
    response = "";
@@ -1047,10 +1082,14 @@ bool PostJsonText(string path, string payload, string &response)
    if(status >= 200 && status < 300)
    {
       RecordHttpSuccess();
+      if(path == "/api/market-data/ingest/mt5/ticks")
+         RecordTickSuccess();
       return true;
    }
 
-   if(status < 0 || status >= 500)
+   if(IsTickBackpressure(path, status, response))
+      RecordTickBackpressure();
+   else if(status < 0 || status >= 500)
       RecordHttpFailure("POST", path, status, request_error, response);
    else
       RecordHttpApplicationFailure("POST", path, status, request_error, response);
@@ -1086,10 +1125,14 @@ bool PostJson(string path, string payload)
    if(status >= 200 && status < 300)
    {
       RecordHttpSuccess();
+      if(path == "/api/market-data/ingest/mt5/ticks")
+         RecordTickSuccess();
       return true;
    }
 
-   if(status < 0 || status >= 500)
+   if(IsTickBackpressure(path, status, response))
+      RecordTickBackpressure();
+   else if(status < 0 || status >= 500)
       RecordHttpFailure("POST", path, status, request_error, response);
    else
       RecordHttpApplicationFailure("POST", path, status, request_error, response);

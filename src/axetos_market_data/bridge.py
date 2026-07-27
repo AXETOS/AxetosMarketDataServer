@@ -112,6 +112,9 @@ class QueueStats:
     queued_ticks: int = 0
     processed_ticks: int = 0
     rejected_ticks: int = 0
+    dropped_batches: int = 0
+    dropped_ticks: int = 0
+    coalesced_batches: int = 0
     queue_depth: int = 0
     last_batch_utc: str | None = None
     last_error: str | None = None
@@ -138,6 +141,8 @@ class Mt5BridgeService:
         self._service = MarketDataService(self.store)
         self._last_ingested: dict[tuple[str, str], datetime] = {}
         self._ingest_lock = RLock()
+        self._queue_lock = RLock()
+        self._stopping = False
         self._thread = threading.Thread(target=self._consume, daemon=True, name="mt5-bridge-ingestion")
         self._thread.start()
 
@@ -147,8 +152,23 @@ class Mt5BridgeService:
             raise ValueError("ProviderKey and TerminalInstanceId are required")
 
     def shutdown(self) -> None:
-        try: self._queue.put_nowait(None)
-        except queue.Full: return
+        self._stopping = True
+        try:
+            self._queue.put_nowait(None)
+        except queue.Full:
+            # Make room for the shutdown sentinel without waiting on a congested queue.
+            try:
+                dropped = self._queue.get_nowait()
+                self._queue.task_done()
+                if dropped is not None:
+                    self.stats.dropped_batches += 1
+                    self.stats.dropped_ticks += len(dropped.ticks)
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait(None)
+            except queue.Full:
+                return
         self._thread.join(timeout=5)
 
     def heartbeat(self, request: BridgeHeartbeatRequest) -> None:
@@ -176,13 +196,30 @@ class Mt5BridgeService:
         self.validate_identity(request.provider_key, request.terminal_instance_id)
         if not request.ticks:
             return 0
-        try:
-            # Give the dedicated live-ingestion worker a brief chance to drain rather
-            # than immediately returning HTTP 503 while a background SQLite batch is
-            # yielding. Backfill is throttled separately and must never own this queue.
-            self._queue.put(request, timeout=2.0)
-        except queue.Full as exc:
-            raise RuntimeError("MT5 ingestion queue is full") from exc
+        if self._stopping:
+            raise RuntimeError("MT5 ingestion is shutting down")
+
+        # Live ticks are snapshots, not durable work items. If the bounded queue is
+        # saturated, discard the oldest unprocessed snapshot and retain the newest one.
+        # This prevents a stale retry backlog from keeping the queue permanently full.
+        with self._queue_lock:
+            try:
+                self._queue.put_nowait(request)
+            except queue.Full:
+                try:
+                    dropped = self._queue.get_nowait()
+                    self._queue.task_done()
+                except queue.Empty:
+                    dropped = None
+                if dropped is not None:
+                    self.stats.dropped_batches += 1
+                    self.stats.dropped_ticks += len(dropped.ticks)
+                    self.stats.coalesced_batches += 1
+                try:
+                    self._queue.put_nowait(request)
+                except queue.Full as exc:
+                    raise RuntimeError("MT5 ingestion queue remains saturated") from exc
+
         self.stats.queued_batches += 1
         self.stats.queued_ticks += len(request.ticks)
         self.stats.queue_depth = self._queue.qsize()

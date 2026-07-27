@@ -408,10 +408,25 @@ def create_app(
         return {"accepted": count, "serverTimeUtc": datetime.now(UTC).isoformat()}
 
     @app.post("/api/market-data/ingest/mt5/ticks", status_code=202)
-    def bridge_ticks(request: BridgeTicksRequest) -> dict[str, object]:
-        try: count=bridge.enqueue_ticks(request)
-        except (ValueError,RuntimeError) as exc: raise HTTPException(503 if isinstance(exc,RuntimeError) else 400, str(exc)) from exc
-        return {"accepted": count, "queued": True}
+    def bridge_ticks(request: BridgeTicksRequest, response: Response) -> dict[str, object]:
+        try:
+            count = bridge.enqueue_ticks(request)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(
+                429,
+                str(exc),
+                headers={"Retry-After": "5"},
+            ) from exc
+        queue_view = bridge.view()
+        response.headers["X-MT5-Queue-Depth"] = str(queue_view["queue_depth"])
+        return {
+            "accepted": count,
+            "queued": True,
+            "coalescedBatches": queue_view["coalesced_batches"],
+            "droppedTicks": queue_view["dropped_ticks"],
+        }
 
     @app.post("/api/market-data/ingest/mt5/candles")
     def bridge_candles(request: BridgeCandlesRequest) -> dict[str, object]:

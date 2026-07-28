@@ -1,28 +1,46 @@
+# Axetos Market Data Server
 
-## v0.62.0 dedicated repair process
+A standalone Python market-data server for collecting official MT5 candles, maintaining live feed state, repairing historical coverage, aggregating higher timeframes, and storing market data in SQLite or PostgreSQL.
 
-Bottom-up candle aggregation now runs in a dedicated operating-system process with its own database connection. The API process only accepts MT5 traffic and coordinates jobs; it never executes H1/D1/W1/MN1 rebuilds. Historical writes remain in the separate history-ingestion process. This keeps heartbeat and completed-M1 endpoints responsive while repair is active.
+This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders.
+
+## Version 0.62.1
+
+### Clean Windows shutdown and README structure
+
+History ingestion and candle repair workers now ignore the console `Ctrl+C` signal and stop only through the parent process's explicit shutdown sentinel. Worker queue pipes are closed and joined, listener threads are stopped, and process joins run outside the ASGI event loop. Normal Windows/Python 3.14 shutdown no longer prints child-process `KeyboardInterrupt` tracebacks.
+
+The README now begins with the project title and summary. Current release notes are ordered correctly and no older bridge compile note is presented as v0.62.0.
 
 ## Version 0.62.0
 
-### MT5 bridge compile fix
+### Dedicated history and candle-repair processes
 
-Bridge v1.30 replaces the invalid `TimeSeconds(now)` expression in completed-minute polling with the supported MQL5 `TimeToStruct` API and `MqlDateTime.sec`. This fixes the compiler errors reported at line 440 while preserving the previous-minute polling delay.
+The API process handles heartbeats, current quotes, completed-M1 uploads, status, and UI requests. Historical candle persistence runs in the dedicated history-ingestion process, while H1/D1/W1/MN1 aggregation runs in a separate candle-repair process. Both workers own independent database connections, preventing heavy repair from starving the HTTP endpoints.
+
+## Version 0.61.9
+
+### MT5 bridge compile correction
+
+Bridge v1.30 replaces the invalid `TimeSeconds(now)` expression with `TimeToStruct` and `MqlDateTime.sec`, preserving completed-minute polling while compiling correctly in MQL5.
 
 ## Version 0.61.8
 
 ### Official completed-minute polling
 
-MT5 live ticks and heartbeats are now used only for feed health, current bid/ask, and runtime status. They never create or persist M1 candles. Bridge v1.29 waits a configurable short delay after each minute boundary, requests the previous completed M1 candle directly from MT5, and force-upserts that official timestamp. If MT5 cannot return the minute immediately, no candle is fabricated; the authoritative 24-hour repair recovers it later.
+Bridge v1.29 polls the previous completed M1 candle directly from MT5 shortly after every minute boundary. Heartbeats and live observations update feed health and current quotes only; they do not construct or persist M1 candles. The 24-hour repair records its runtime and performs an authoritative catch-up pass for candles completed while repair was running.
 
-### Repair-window catch-up
+## Version 0.61.7
 
-Manual and automatic 24-hour M1 refreshes record their start and finish times. After the main per-instrument refresh completes, the coordinator performs one additional authoritative M1 pass covering the repair runtime (with a one-minute safety margin), then reports `repair.recent_m1_catchup_completed`. This closes minutes that may have completed while the longer repair was running.
+### Off-minute M1 cleanup
 
+The authoritative M1 refresh removes malformed local M1 rows whose timestamps contain seconds or microseconds before official minute-aligned MT5 candles are written.
 
-Version 0.61.6 removes the recent-M1 verification gate. During the manual or automatic 24-hour refresh, every M1 candle returned by MT5 is force-upserted by exact provider/instrument/timestamp. Existing rows at returned timestamps are overwritten, missing rows are inserted, and timestamps not returned by MT5 are left untouched. No count, alignment, chart-path, quality, or provenance check can reject the official write. Instruments are still processed sequentially; after each timestamp upsert completes, higher intervals are rebuilt and the coordinator advances. A derived-timeframe rebuild warning is logged without undoing or rejecting the authoritative M1 replacement.
+## Version 0.61.6
 
-# Axetos Market Data Server
+### Direct official M1 upsert
+
+Every M1 candle returned by MT5 is force-upserted by exact provider, instrument, and timestamp. Unreturned timestamps remain untouched, and no post-write quality or verification gate can reject the official candle.
 
 ## Version 0.61.5
 
@@ -48,9 +66,6 @@ Version 0.61.3 introduced authoritative recent-M1 replacement and stopped persis
 
 Version 0.61.2 strengthens recent M1 recovery. The 24-hour verifier now treats both missing and flatline one-minute candles as suspicious, merges adjacent suspicious minutes into exact MT5 requests, inserts missing candles, and replaces an existing flatline only when MT5 returns a demonstrably better non-flat candle. Existing non-flat candles and provider-confirmed equal flatlines are retained. Final completion occurs only after the second timestamp/value verification pass; remaining suspicious ranges are explicitly marked bad so the coordinator always advances.
 
-A standalone Python market-data server for collecting financial market ticks, building OHLC candles, aggregating timeframes, validating historical data, and storing the result in SQLite or PostgreSQL.
-
-This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
 ## Version 0.61.1
 

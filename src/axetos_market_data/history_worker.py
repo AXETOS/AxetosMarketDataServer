@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import queue
+import signal
 import threading
 import time
 import uuid
@@ -63,10 +64,17 @@ def _history_worker_main(
     command_queue: mp.Queue,
     result_queue: mp.Queue,
 ) -> None:
+    # Worker children must not receive the console Ctrl+C intended for Uvicorn.
+    # The parent sends an explicit queue sentinel during orderly shutdown.
+    if hasattr(signal, "SIGINT"):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
     store = MarketDataStore(database_target)
     store.initialize()
     while True:
-        command = command_queue.get()
+        try:
+            command = command_queue.get()
+        except (EOFError, OSError):
+            return
         if command is None:
             return
         job_id = str(command["job_id"])
@@ -162,7 +170,18 @@ class HistoryIngestionProcess:
             if process.is_alive():
                 process.terminate()
                 process.join(timeout=2)
+            listener = self._listener
+            if listener is not None and listener.is_alive():
+                listener.join(timeout=1)
+            self._listener = None
+            for worker_queue in (self._commands, self._results):
+                try:
+                    worker_queue.close()
+                    worker_queue.join_thread()
+                except (OSError, ValueError):
+                    pass
             self.stats.running = False
+            self.stats.process_id = None
             self._process = None
             for event, payload in self._waiters.values():
                 payload.update({"ok": False, "error": "History worker stopped"})

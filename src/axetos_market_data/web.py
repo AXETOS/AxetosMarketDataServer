@@ -419,12 +419,19 @@ def create_app(
         repair_process.start()
         supervisor.load()
         scheduler.start()
-        yield
-        scheduler.stop()
-        supervisor.shutdown()
-        bridge.shutdown()
-        repair_process.shutdown()
-        history_process.shutdown()
+        try:
+            yield
+        finally:
+            scheduler.stop()
+            supervisor.shutdown()
+            bridge.shutdown()
+            # Process joins are blocking operations. Keep them off the ASGI event loop
+            # so an ordinary Ctrl+C can complete without cancelled-request tracebacks.
+            await asyncio.gather(
+                asyncio.to_thread(repair_process.shutdown),
+                asyncio.to_thread(history_process.shutdown),
+                return_exceptions=True,
+            )
 
     security = SecuritySettings.from_environment()
 

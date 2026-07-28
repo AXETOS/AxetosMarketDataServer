@@ -52,7 +52,7 @@ def test_repair_stages_are_only_required_hierarchy() -> None:
 
 def test_bridge_polls_two_completed_minutes() -> None:
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "1.34"' in source
+    assert '#property version   "2.00"' in source
     assert "newest_completed - 60" in source
     assert "newest_completed + 59" in source
     assert "Always overlap by one minute" in source

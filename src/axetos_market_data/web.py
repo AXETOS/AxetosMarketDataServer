@@ -42,6 +42,7 @@ from .full_history import FullHistoryBackfillManager, PlannedRange
 from .history_worker import HistoryIngestionProcess
 from .repair_worker import CandleRepairProcess
 from .hierarchical_repair import HierarchicalCandleRepair
+from .live_m1 import LiveM1CommandScheduler
 
 
 class BackfillRequest(BaseModel):
@@ -188,6 +189,7 @@ def create_app(
     supervisor = ProviderSupervisor(config_store, store, secret_store)
     history_process = HistoryIngestionProcess(store.database_target)
     repair_process = CandleRepairProcess(store.database_target)
+    live_m1 = LiveM1CommandScheduler()
     scheduler = MaintenanceScheduler(store)
     backups = BackupService(database_path, configuration_path)
     benchmark_jobs = BenchmarkJobManager()
@@ -648,9 +650,11 @@ def create_app(
     def bridge_candles(request: BridgeCandlesRequest) -> dict[str, object]:
         received = len(request.candles)
         context = full_history.request_context(request.provider_key, request.request_id)
+        if context is None and request.request_id:
+            context = live_m1.context(request.provider_key, request.request_id)
         replace_all = request.authoritative or (bool(context) and (
-            str(context.get("workflow")) == "recent_m1"
-            or str(context.get("phase")) == "recent_m1_download"
+            str(context.get("workflow")) in {"recent_m1", "live_m1"}
+            or str(context.get("phase")) in {"recent_m1_download", "live_m1"}
         ) and str(context.get("timeframe")) == "1m")
         replace_flatline = False
         removed_off_minute = 0
@@ -703,7 +707,13 @@ def create_app(
         terminal_instance_id: str = Query(alias="terminalInstanceId"),
     ) -> str:
         _ = terminal_instance_id
-        return full_history.next_request(provider_key)
+        command = full_history.next_request(provider_key)
+        if command:
+            return command
+        worker = supervisor.get(provider_key)
+        if worker is None or worker.config.kind.lower() != "mt5" or not worker.config.enabled:
+            return ""
+        return live_m1.next_command(provider_key, worker.config.normalized_symbols())
 
     @app.post("/api/market-data/mt5/repair-result")
     def bridge_repair_result(
@@ -719,10 +729,13 @@ def create_app(
         error_code: int | None = Query(default=None, alias="errorCode"),
     ) -> dict[str, object]:
         _ = (terminal_instance_id, provider_symbol, interval)
-        acknowledgement = full_history.batch_result(
-            provider_key, request_id, bars_received, bars_inserted, completed,
-            unavailable=unavailable, error_code=error_code,
-        )
+        if live_m1.accepts(provider_key, request_id):
+            acknowledgement = live_m1.complete(provider_key, request_id, completed)
+        else:
+            acknowledgement = full_history.batch_result(
+                provider_key, request_id, bars_received, bars_inserted, completed,
+                unavailable=unavailable, error_code=error_code,
+            )
         accepted = acknowledgement != "IGNORED"
         return {
             "accepted": accepted,

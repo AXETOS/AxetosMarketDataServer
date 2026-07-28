@@ -2,6 +2,14 @@
 
 A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
 
+## Version 0.66.0
+
+### Thin server-controlled MT5 bridge rewrite
+
+The MT5 bridge has been rebuilt from scratch as a command executor. It no longer schedules completed-minute polling, history discovery, backfill sequencing, retry policy, repair passes, flatline compression, or candle conversion. The server owns those decisions and returns one explicit command at a time.
+
+The bridge now only registers the terminal and symbol catalogue, sends heartbeat/current quotes, asks the server for a command, executes the requested `CopyRates` range, uploads the returned candles, and reports the result. Routine live M1 collection is now scheduled by the server, which requests the previous two completed M1 candles per configured symbol.
+
 ## Version 0.64.1
 
 ### Repair keeps heartbeat live

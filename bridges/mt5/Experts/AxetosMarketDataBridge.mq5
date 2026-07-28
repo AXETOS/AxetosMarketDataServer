@@ -1,102 +1,114 @@
 #property copyright "AxetosOS"
-#property version   "1.34"
+#property version   "2.00"
 #property strict
-#property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
+#property description "Thin MT5 command adapter for Axetos Market Data Server."
 
-input string InpProviderKey       = "Oanda.MT5";
-input string InpServerUrl         = "http://127.0.0.1:8000";
-input string InpBridgeToken       = ""; // Optional. Leave blank for local loopback use.
-input bool   InpDiscoverAllSymbols = true;
-input int    InpDiscoveryBatchSize = 75;
-input int    InpRequestTimeoutMs   = 5000;
-input int    InpHeartbeatSeconds   = 1;
-input int    InpCompletedM1DelaySeconds = 3;
-input int    InpSelectionRefreshSeconds = 15;
-input bool   InpSendHistoricalBars = false; // Full history is server-controlled.
-input int    InpControlTimeoutMs = 1000;
-input int    InpLiveTimeoutMs    = 1500;
+input string InpProviderKey = "Oanda.MT5";
+input string InpServerUrl = "http://127.0.0.1:8000";
+input string InpBridgeToken = "";
+input bool InpDiscoverAllSymbols = true;
+input int InpDiscoveryBatchSize = 75;
+input int InpHeartbeatSeconds = 1;
+input int InpSelectionRefreshSeconds = 15;
+input int InpControlTimeoutMs = 1000;
+input int InpLiveTimeoutMs = 1500;
+input int InpRequestTimeoutMs = 5000;
 
 string g_symbols[];
-datetime g_last_m1_bar[];
 datetime g_last_heartbeat = 0;
 datetime g_last_selection_refresh = 0;
 string g_terminal_id = "";
-enum AXETOS_HTTP_CHANNEL
-{
-   HTTP_CONTROL = 0,
-   HTTP_HEARTBEAT = 1,
-   HTTP_QUOTES = 2,
-   HTTP_CANDLES = 3,
-   HTTP_CATALOG = 4
-};
 int g_http_channel_failures[5];
 datetime g_http_channel_last_log[5];
 datetime g_tick_retry_after = 0;
 bool g_tick_congested = false;
 int g_tick_suppressed_batches = 0;
-datetime g_last_history_progress_log = 0;
-bool g_history_job_seen = false;
-string g_pending_probe_request_id = "";
-int g_pending_probe_attempts = 0;
-datetime g_last_probe_progress_log = 0;
-
-// Provider-native week/month history is never requested. The server builds
-// Monday-Sunday weeks and true calendar months exclusively from canonical daily data.
-ENUM_TIMEFRAMES g_timeframes[1] = { PERIOD_M1 };
-string g_intervals[1] = { "1m" };
+enum AXETOS_HTTP_CHANNEL { HTTP_CONTROL=0, HTTP_HEARTBEAT=1, HTTP_QUOTES=2, HTTP_CANDLES=3, HTTP_CATALOG=4 };
 
 int OnInit()
 {
-   // The Market Data Server is the sole subscription authority. The bridge starts
-   // empty and refuses to stream anything until the server returns an explicit list.
    ArrayResize(g_symbols, 0);
-   ArrayResize(g_last_m1_bar, 0);
-
    g_terminal_id = BuildTerminalId();
    EventSetTimer(1);
-   string transport_response = "";
-   if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.34: transport self-test passed; server=%s", InpServerUrl);
+   string response = "";
+   if(GetText("/api/live", response))
+      PrintFormat("Axetos MT5 Bridge v2.00: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
-   if(InpDiscoverAllSymbols)
-      SendDiscoveredInstrumentCatalogue();
-
+   if(InpDiscoverAllSymbols) SendDiscoveredInstrumentCatalogue();
    RefreshServerSelection();
-   RefreshRepairRequest();
-   PrintFormat("Axetos MT5 Bridge started: provider=%s terminal=%s streaming-symbols=%d server=%s",
-               InpProviderKey, g_terminal_id, ArraySize(g_symbols), InpServerUrl);
    return INIT_SUCCEEDED;
 }
 
-void OnDeinit(const int reason)
-{
-   EventKillTimer();
-}
+void OnDeinit(const int reason) { EventKillTimer(); }
 
 void OnTimer()
 {
    datetime now = TimeCurrent();
-
-   // Heartbeat is independent control-plane traffic and must always run before
-   // potentially long history/repair work. A repair must never make a healthy
-   // terminal appear disconnected or reconnecting.
-   if(g_last_heartbeat == 0 || now - g_last_heartbeat >= InpHeartbeatSeconds)
-      SendHeartbeat();
-
-   // Process at most one active repair/history command per timer cycle. Routine
-   // quote and completed-M1 traffic is deferred while that command is active.
-   if(RefreshRepairRequest())
-      return;
-
-   if(g_last_selection_refresh == 0 || now - g_last_selection_refresh >= InpSelectionRefreshSeconds)
-      RefreshServerSelection();
-
-   // Live ticks are feed-health/current-price evidence only. Official M1 candles
-   // are polled from MT5 after the previous minute has closed.
+   if(g_last_heartbeat == 0 || now - g_last_heartbeat >= InpHeartbeatSeconds) SendHeartbeat();
+   if(g_last_selection_refresh == 0 || now - g_last_selection_refresh >= InpSelectionRefreshSeconds) RefreshServerSelection();
    SendCurrentTicks();
-   SendPreviousCompletedM1();
+   ExecuteServerCommand();
 }
 
+bool ExecuteServerCommand()
+{
+   string path = "/api/market-data/mt5/repair-request.txt?providerKey=" + InpProviderKey +
+                 "&terminalInstanceId=" + g_terminal_id;
+   string response = "";
+   if(!GetText(path, response)) return false;
+   StringTrimLeft(response); StringTrimRight(response);
+   if(response == "") return false;
+   string parts[];
+   int count = StringSplit(response, '|', parts);
+   if(count != 6) return false;
+   string command = parts[0], provider_symbol = parts[1], interval = parts[2];
+   string start_time = parts[3], end_time = parts[4], request_id = parts[5];
+   string symbol = ResolveProviderSymbol(provider_symbol);
+   ENUM_TIMEFRAMES timeframe = IntervalTimeframe(interval);
+   if(symbol == "" || timeframe == PERIOD_CURRENT || !SymbolSelect(symbol, true))
+   {
+      ReportCommandResult(provider_symbol, interval, request_id, false, 0, 0, 0, 4301);
+      return true;
+   }
+   if(command == "DISCOVER" || command == "AVAILABILITY")
+   {
+      datetime earliest=0, latest=0; int bars=0, error_code=0;
+      bool ok = ProbeHistoryRange(symbol, timeframe, interval, start_time, end_time,
+                                  earliest, latest, bars, error_code);
+      string result = "/api/market-data/mt5/history-availability?providerKey=" + InpProviderKey +
+                      "&requestId=" + request_id + "&candleCount=" + IntegerToString(bars);
+      if(ok && bars > 0)
+      {
+         result += "&earliestUtc=" + IsoUtc(CandleTimeToUtc(earliest, interval));
+         result += "&latestUtc=" + IsoUtc(CandleTimeToUtc(latest, interval));
+      }
+      string ignored=""; PostJsonText(result, "{}", ignored);
+      return true;
+   }
+   if(command != "BACKFILL" && command != "FETCH") return true;
+   int copied=0, stored=0, skipped=0, error_code=0;
+   bool completed = SendCandlesForDateRange(symbol, timeframe, interval, start_time, end_time,
+                                             copied, stored, skipped, error_code, request_id);
+   ReportCommandResult(provider_symbol, interval, request_id, completed, copied, stored, skipped, error_code);
+   return true;
+}
+
+void ReportCommandResult(string provider_symbol, string interval, string request_id, bool completed,
+                         int received, int stored, int skipped, int error_code)
+{
+   bool unavailable = (!completed && error_code == 4401);
+   string path = "/api/market-data/mt5/repair-result?providerKey=" + InpProviderKey +
+                 "&terminalInstanceId=" + g_terminal_id +
+                 "&providerSymbol=" + provider_symbol + "&interval=" + interval +
+                 "&completed=" + (completed ? "true" : "false") +
+                 "&barsReceived=" + IntegerToString(received) +
+                 "&barsInserted=" + IntegerToString(stored) +
+                 "&unavailable=" + (unavailable ? "true" : "false") +
+                 "&errorCode=" + IntegerToString(error_code) +
+                 "&requestId=" + request_id;
+   string response="";
+   PostJsonText(path, "{}", response);
+}
 string ResolveProviderSymbol(string configured_symbol)
 {
    if(SymbolInfoInteger(configured_symbol, SYMBOL_EXIST))
@@ -161,11 +173,6 @@ void SendHeartbeat()
       g_last_heartbeat = TimeCurrent();
 }
 
-void SendStreamingInstrumentCatalogue()
-{
-   SendInstrumentBatch(g_symbols, 0, ArraySize(g_symbols));
-}
-
 void SendDiscoveredInstrumentCatalogue()
 {
    int total = SymbolsTotal(false);
@@ -206,209 +213,27 @@ bool SendInstrumentBatch(string &symbols[], int offset, int count)
    for(int i = offset; i < upper; i++)
    {
       string symbol = symbols[i];
-      long digits = SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-      double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-      bool visible = (bool)SymbolInfoInteger(symbol, SYMBOL_VISIBLE);
-      bool selected = (bool)SymbolInfoInteger(symbol, SYMBOL_SELECT);
-      bool custom = (bool)SymbolInfoInteger(symbol, SYMBOL_CUSTOM);
-      string description = SymbolInfoString(symbol, SYMBOL_DESCRIPTION);
-      string path = SymbolInfoString(symbol, SYMBOL_PATH);
-      string currency_base = SymbolInfoString(symbol, SYMBOL_CURRENCY_BASE);
-      string currency_profit = SymbolInfoString(symbol, SYMBOL_CURRENCY_PROFIT);
-      string currency_margin = SymbolInfoString(symbol, SYMBOL_CURRENCY_MARGIN);
-      double contract_size = SymbolInfoDouble(symbol, SYMBOL_TRADE_CONTRACT_SIZE);
-      double volume_min = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-      double volume_max = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-      double volume_step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-      long trade_mode = SymbolInfoInteger(symbol, SYMBOL_TRADE_MODE);
-      long calc_mode = SymbolInfoInteger(symbol, SYMBOL_TRADE_CALC_MODE);
-      string asset_class = ClassifyAsset(symbol, description, path, currency_base, currency_profit);
-      string canonical = CanonicalDiscoveredSymbol(symbol, asset_class, currency_base, currency_profit);
-
       if(items != "") items += ",";
       items += StringFormat(
-         "{\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"digits\":%d,\"point\":%s,\"isVisible\":%s,\"displayName\":\"%s\",\"description\":\"%s\",\"path\":\"%s\",\"assetClass\":\"%s\",\"currencyBase\":\"%s\",\"currencyProfit\":\"%s\",\"currencyMargin\":\"%s\",\"contractSize\":%s,\"volumeMin\":%s,\"volumeMax\":%s,\"volumeStep\":%s,\"tradeMode\":%d,\"calculationMode\":%d,\"isCustom\":%s,\"isSelected\":%s}",
-         JsonEscape(symbol), JsonEscape(canonical), (int)digits,
-         DoubleToString(point, (int)MathMax(0, digits)), visible ? "true" : "false",
-         JsonEscape(description != "" ? description : symbol), JsonEscape(description), JsonEscape(path),
-         JsonEscape(asset_class), JsonEscape(currency_base), JsonEscape(currency_profit), JsonEscape(currency_margin),
-         JsonNumber(contract_size), JsonNumber(volume_min), JsonNumber(volume_max), JsonNumber(volume_step),
-         (int)trade_mode, (int)calc_mode, custom ? "true" : "false", selected ? "true" : "false");
+         "{\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"digits\":%d,\"point\":%s,\"isVisible\":%s,\"isSelected\":%s,\"displayName\":\"%s\",\"description\":\"%s\",\"path\":\"%s\"}",
+         JsonEscape(symbol), JsonEscape(symbol),
+         (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS),
+         JsonNumber(SymbolInfoDouble(symbol, SYMBOL_POINT)),
+         SymbolInfoInteger(symbol, SYMBOL_VISIBLE) ? "true" : "false",
+         SymbolInfoInteger(symbol, SYMBOL_SELECT) ? "true" : "false",
+         JsonEscape(symbol), JsonEscape(SymbolInfoString(symbol, SYMBOL_DESCRIPTION)),
+         JsonEscape(SymbolInfoString(symbol, SYMBOL_PATH)));
    }
-
-   if(items == "")
-      return true;
-
    string json = StringFormat(
       "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"timeUtc\":\"%s\",\"instruments\":[%s]}",
       JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), IsoUtc(TimeGMT()), items);
    return PostJson("/api/market-data/ingest/mt5/instruments", json);
 }
 
-string ClassifyAsset(string symbol, string description, string path, string currency_base, string currency_profit)
-{
-   string normalized_path = path;
-   StringToUpper(normalized_path);
-
-   // MT5's broker catalogue path is the strongest classification signal. OANDA's
-   // PRO tree mixes FX, metals, energy, indices and commodities under one root.
-   if(StringFind(normalized_path, "EQUITIES_CFD\\") == 0)
-      return "EquityCFD";
-   if(StringFind(normalized_path, "ETF_CFD\\") == 0)
-      return "EtfCFD";
-   if(StringFind(normalized_path, "CRYPTO\\") == 0)
-      return "Crypto";
-   if(StringFind(normalized_path, "FOREX\\") == 0 || StringFind(normalized_path, "PRO\\FX\\") == 0)
-      return "Forex";
-   if(StringFind(normalized_path, "PRO\\NOBLE\\") == 0 || StringFind(normalized_path, "METAL") >= 0)
-      return "Metal";
-   if(StringFind(normalized_path, "PRO\\ENERGY\\") == 0)
-      return "Energy";
-   if(StringFind(normalized_path, "PRO\\INDICES\\") == 0)
-      return "Index";
-   if(StringFind(normalized_path, "PRO\\COMMODITIES\\") == 0)
-      return "Commodity";
-   if(StringFind(normalized_path, "BOND") >= 0 || StringFind(normalized_path, "TREASUR") >= 0)
-      return "Bond";
-   if(StringFind(normalized_path, "FUTURE") >= 0)
-      return "Future";
-
-   string haystack = symbol + " " + description + " " + path;
-   StringToUpper(haystack);
-   if(StringFind(haystack, "GOLD") >= 0 || StringFind(haystack, "SILVER") >= 0 ||
-      StringFind(haystack, "XAU") >= 0 || StringFind(haystack, "XAG") >= 0 ||
-      StringFind(haystack, "PLATINUM") >= 0 || StringFind(haystack, "PALLADIUM") >= 0)
-      return "Metal";
-   if(StringFind(haystack, "ENERGY") >= 0 || StringFind(haystack, "OIL") >= 0 ||
-      StringFind(haystack, "BRENT") >= 0 || StringFind(haystack, "WTI") >= 0 ||
-      StringFind(haystack, "NATGAS") >= 0 || StringFind(haystack, "NATURAL GAS") >= 0)
-      return "Energy";
-   if(StringFind(haystack, "INDEX") >= 0 || StringFind(haystack, "INDICES") >= 0)
-      return "Index";
-   if(StringFind(haystack, "CRYPTO") >= 0 || StringFind(haystack, "BITCOIN") >= 0 || StringFind(haystack, "ETHEREUM") >= 0)
-      return "Crypto";
-   if(StringFind(haystack, "ETF") >= 0)
-      return "EtfCFD";
-   if(StringFind(haystack, "EQUITY") >= 0 || StringFind(haystack, "STOCK") >= 0 || StringFind(haystack, "SHARE") >= 0)
-      return "EquityCFD";
-   if(IsCurrencyCode(currency_base) && IsCurrencyCode(currency_profit))
-      return "Forex";
-   return "CFD";
-}
-
-bool IsCurrencyCode(string value)
-{
-   if(StringLen(value) != 3)
-      return false;
-   string upper = value;
-   StringToUpper(upper);
-   string known = "USD,EUR,GBP,JPY,CHF,CAD,AUD,NZD,SEK,NOK,DKK,PLN,CZK,HUF,TRY,ZAR,MXN,SGD,HKD,CNH,CNY,ILS,AED,SAR,THB,INR,IDR,MYR,PHP,TWD,BRL,CLP,COP,ARS";
-   return StringFind("," + known + ",", "," + upper + ",") >= 0;
-}
-
-string CanonicalDiscoveredSymbol(string provider_symbol, string asset_class, string currency_base, string currency_profit)
-{
-   string base = currency_base;
-   string profit = currency_profit;
-   StringToUpper(base);
-   StringToUpper(profit);
-   // Crypto CFDs frequently report the account settlement currency (USD) as both
-   // currency base and profit. Derive the traded crypto/quote pair from the broker
-   // symbol instead: BTCUSD -> BTC/USD, ETHUSD -> ETH/USD.
-   if(asset_class == "Crypto")
-      return CanonicalCryptoSymbol(provider_symbol);
-
-   if(asset_class == "Metal")
-   {
-      string metal_symbol = provider_symbol;
-      StringToUpper(metal_symbol);
-
-      // Preserve the actual quote currency for metal crosses. IC Markets exposes
-      // symbols such as XAGUSD, XAGAUD and XAGEUR; collapsing all of them to
-      // XAG/USD causes the wrong live feed to overwrite the USD silver stream.
-      string clean_metal = metal_symbol;
-      int suffix_dot = StringFind(clean_metal, ".");
-      if(suffix_dot > 0)
-         clean_metal = StringSubstr(clean_metal, 0, suffix_dot);
-      StringReplace(clean_metal, "_", "");
-      StringReplace(clean_metal, "-", "");
-
-      string metal_base = "";
-      if(StringFind(clean_metal, "GOLD") == 0 || StringFind(clean_metal, "XAU") == 0)
-         metal_base = "XAU";
-      else if(StringFind(clean_metal, "SILVER") == 0 || StringFind(clean_metal, "XAG") == 0)
-         metal_base = "XAG";
-
-      if(metal_base != "")
-      {
-         string quote = profit;
-         if(StringLen(clean_metal) >= 6)
-         {
-            string suffix_quote = StringSubstr(clean_metal, StringLen(clean_metal) - 3, 3);
-            if(IsCurrencyCode(suffix_quote))
-               quote = suffix_quote;
-         }
-         if(quote == "" || !IsCurrencyCode(quote))
-            quote = "USD";
-         return metal_base + "/" + quote;
-      }
-   }
-
-   if(asset_class == "Forex" && base != "" && profit != "")
-      return base + "/" + profit;
-
-   string canonical = provider_symbol;
-   StringToUpper(canonical);
-
-   // Equity/ETF symbols carry useful market identity after the final dot. Keep it,
-   // but remove the broker's _CFD marker: AAPL_CFD.US -> AAPL.US.
-   if(asset_class == "EquityCFD" || asset_class == "EtfCFD")
-   {
-      StringReplace(canonical, "_CFD", "");
-      return canonical;
-   }
-
-   // For broker suffixes such as .pro, retain the meaningful instrument name only.
-   int dot = StringFind(canonical, ".");
-   if(dot > 0)
-      canonical = StringSubstr(canonical, 0, dot);
-   return canonical;
-}
-
-
-string CanonicalCryptoSymbol(string provider_symbol)
-{
-   string canonical = provider_symbol;
-   StringToUpper(canonical);
-
-   int dot = StringFind(canonical, ".");
-   if(dot > 0)
-      canonical = StringSubstr(canonical, 0, dot);
-   StringReplace(canonical, "_CFD", "");
-
-   string quote_codes[] = {"USDT", "USDC", "USD", "EUR", "GBP", "JPY"};
-   int count = ArraySize(quote_codes);
-   for(int i = 0; i < count; i++)
-   {
-      string quote = quote_codes[i];
-      int quote_length = StringLen(quote);
-      int symbol_length = StringLen(canonical);
-      if(symbol_length <= quote_length)
-         continue;
-
-      int offset = symbol_length - quote_length;
-      if(StringSubstr(canonical, offset, quote_length) == quote)
-         return StringSubstr(canonical, 0, offset) + "/" + quote;
-   }
-
-   return canonical;
-}
-
 string JsonNumber(double value)
 {
-   if(!MathIsValidNumber(value))
-      return "0";
-   return DoubleToString(value, 8);
+   if(!MathIsValidNumber(value)) return "0";
+   return DoubleToString(value, 10);
 }
 
 void SendCurrentTicks()
@@ -444,105 +269,6 @@ void SendCurrentTicks()
       JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), items);
    PostJson("/api/market-data/ingest/mt5/ticks", json);
 }
-
-void SendPreviousCompletedM1()
-{
-   datetime now = TimeCurrent();
-   int delay = MathMax(1, MathMin(15, InpCompletedM1DelaySeconds));
-   MqlDateTime now_parts;
-   TimeToStruct(now, now_parts);
-   if(now_parts.sec < delay)
-      return;
-
-   datetime current_minute = (datetime)((long)now - ((long)now % 60));
-   datetime newest_completed = current_minute - 60;
-
-   for(int i = 0; i < ArraySize(g_symbols); i++)
-   {
-      if(i < ArraySize(g_last_m1_bar) && g_last_m1_bar[i] == newest_completed)
-         continue;
-
-      string symbol = g_symbols[i];
-      MqlRates rates[];
-      ArraySetAsSeries(rates, false);
-      ResetLastError();
-      // Always overlap by one minute. This makes normal live collection repair a
-      // single missed poll without any separate gap state machine.
-      int copied = CopyRates(symbol, PERIOD_M1, newest_completed - 60, newest_completed + 59, rates);
-      if(copied <= 0)
-      {
-         ResetLastError();
-         continue;
-      }
-
-      int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-      string items = "";
-      for(int r = 0; r < copied; r++)
-      {
-         if(items != "") items += ",";
-         items += StringFormat(
-            "{\"timeUtc\":\"%s\",\"open\":%s,\"high\":%s,\"low\":%s,\"close\":%s,\"tickVolume\":%I64d}",
-            IsoUtc(CandleTimeToUtc(rates[r].time, "1m")),
-            DoubleToString(rates[r].open, digits), DoubleToString(rates[r].high, digits),
-            DoubleToString(rates[r].low, digits), DoubleToString(rates[r].close, digits), rates[r].tick_volume);
-      }
-      string json = StringFormat(
-         "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"1m\",\"authoritative\":true,\"candles\":[%s]}",
-         JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), JsonEscape(symbol),
-         JsonEscape(CanonicalSymbol(symbol)), items);
-
-      string response = "";
-      if(PostJsonText("/api/market-data/ingest/mt5/candles", json, response) && i < ArraySize(g_last_m1_bar))
-         g_last_m1_bar[i] = newest_completed;
-   }
-}
-
-bool SendCandles(string symbol, ENUM_TIMEFRAMES timeframe, string interval, int count, int start_pos, int &copied_out)
-{
-   datetime oldest = 0;
-   return SendCandlesWithCoverage(symbol, timeframe, interval, count, start_pos, copied_out, oldest);
-}
-
-bool SendCandlesWithCoverage(string symbol, ENUM_TIMEFRAMES timeframe, string interval, int count, int start_pos,
-                             int &copied_out, datetime &oldest_out)
-{
-   copied_out = 0;
-   oldest_out = 0;
-   MqlRates rates[];
-   ArraySetAsSeries(rates, true);
-   ResetLastError();
-   int copied = CopyRates(symbol, timeframe, start_pos, count, rates);
-   copied_out = copied;
-   if(copied <= 0)
-   {
-      PrintFormat("Axetos MT5 Bridge: CopyRates failed for %s %s (%d).", symbol, interval, GetLastError());
-      ResetLastError();
-      return false;
-   }
-
-   oldest_out = rates[copied - 1].time;
-   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-   string items = "";
-   for(int i = copied - 1; i >= 0; i--)
-   {
-      if(items != "") items += ",";
-      items += StringFormat(
-         "{\"timeUtc\":\"%s\",\"open\":%s,\"high\":%s,\"low\":%s,\"close\":%s,\"tickVolume\":%I64d}",
-         IsoUtc(CandleTimeToUtc(rates[i].time, interval)),
-         DoubleToString(rates[i].open, digits),
-         DoubleToString(rates[i].high, digits),
-         DoubleToString(rates[i].low, digits),
-         DoubleToString(rates[i].close, digits),
-         rates[i].tick_volume);
-   }
-
-   string json = StringFormat(
-      "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"%s\",\"candles\":[%s]}",
-      JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), JsonEscape(symbol),
-      JsonEscape(CanonicalSymbol(symbol)), interval, items);
-   return PostJson("/api/market-data/ingest/mt5/candles", json);
-}
-
 
 bool SendCandlesForDateRange(string symbol, ENUM_TIMEFRAMES timeframe, string interval,
                              string start_date, string end_date, int &copied_out, int &stored_out,
@@ -748,164 +474,6 @@ bool ProbeHistoryRange(string symbol, ENUM_TIMEFRAMES timeframe, string interval
    return true;
 }
 
-bool RefreshRepairRequest()
-{
-   string path = "/api/market-data/mt5/repair-request.txt?providerKey=" + InpProviderKey +
-                 "&terminalInstanceId=" + g_terminal_id;
-   string response = "";
-   if(!GetText(path, response))
-      return false;
-
-   StringTrimLeft(response);
-   StringTrimRight(response);
-   if(response == "")
-      return false;
-
-   string parts[];
-   int part_count = StringSplit(response, '|', parts);
-   if(part_count < 4)
-      return false;
-
-   string command = parts[0];
-   StringTrimLeft(command); StringTrimRight(command);
-   string symbol = parts[1];
-   string interval = parts[2];
-   StringTrimLeft(symbol); StringTrimRight(symbol);
-   StringTrimLeft(interval); StringTrimRight(interval);
-   string resolved = ResolveProviderSymbol(symbol);
-
-   if((command == "AVAILABILITY" || command == "DISCOVER") && part_count == 6)
-   {
-      string start_time = parts[3];
-      string end_time = parts[4];
-      string request_id = parts[5];
-      ENUM_TIMEFRAMES timeframe = IntervalTimeframe(interval);
-      if(command == "DISCOVER")
-         PrintFormat("Axetos MT5 Bridge: discovering available %s history for %s across the ten-year window, %s through %s; request=%s.",
-                     interval, resolved, start_time, end_time, request_id);
-      else
-         PrintFormat("Axetos MT5 Bridge: checking download range %s %s, %s through %s; request=%s.",
-                     resolved, interval, start_time, end_time, request_id);
-      if(!g_history_job_seen)
-      {
-         PrintFormat("Axetos MT5 Bridge: full-history job received; probing %s %s.", resolved, interval);
-         g_history_job_seen = true;
-      }
-      if(g_pending_probe_request_id != request_id)
-      {
-         g_pending_probe_request_id = request_id;
-         g_pending_probe_attempts = 0;
-      }
-
-      datetime earliest = 0, latest = 0;
-      int available_count = 0, probe_error = 0;
-      bool ok = timeframe != PERIOD_CURRENT && resolved != "" && SymbolSelect(resolved, true) &&
-                ProbeHistoryRange(resolved, timeframe, interval, start_time, end_time,
-                                  earliest, latest, available_count, probe_error);
-
-      // CopyRates returns -1 while MT5 downloads/builds a missing series. Keep the
-      // same server request pending and retry on a later timer cycle so live tick
-      // collection is not blocked by a synchronous wait.
-      bool history_sync_pending = (available_count <= 0 &&
-                                   (probe_error == 4401 || probe_error == 4403 || probe_error == 4405));
-      if(history_sync_pending && g_pending_probe_attempts < 3)
-      {
-         g_pending_probe_attempts++;
-         datetime probe_now = TimeCurrent();
-         if(g_last_probe_progress_log == 0 || probe_now - g_last_probe_progress_log >= 10)
-         {
-            PrintFormat("Axetos MT5 Bridge: waiting for MT5 history sync; %s %s, %s through %s, attempt %d/3, error=%d.",
-                        resolved, interval, start_time, end_time, g_pending_probe_attempts, probe_error);
-            g_last_probe_progress_log = probe_now;
-         }
-         return true;
-      }
-
-      string result_path = "/api/market-data/mt5/history-availability?providerKey=" + InpProviderKey +
-                           "&requestId=" + request_id +
-                           "&candleCount=" + IntegerToString(available_count);
-      if(ok && available_count > 0)
-      {
-         result_path += "&earliestUtc=" + IsoUtc(CandleTimeToUtc(earliest, interval));
-         result_path += "&latestUtc=" + IsoUtc(CandleTimeToUtc(latest, interval));
-      }
-      string server_decision = "";
-      bool reported = PostJsonText(result_path, "{}", server_decision);
-      if(reported)
-      {
-         StringTrimLeft(server_decision); StringTrimRight(server_decision);
-         if(command == "DISCOVER")
-            PrintFormat("Axetos MT5 Bridge: %s history discovery for %s completed; bars=%d, earliest=%s, latest=%s, server=%s.",
-                        interval, resolved, available_count,
-                        earliest > 0 ? TimeToString(earliest, TIME_DATE|TIME_MINUTES) : "unavailable",
-                        latest > 0 ? TimeToString(latest, TIME_DATE|TIME_MINUTES) : "unavailable",
-                        server_decision);
-         else
-            PrintFormat("Axetos MT5 Bridge: availability result %s %s, %s through %s; candles=%d; server=%s.",
-                        resolved, interval, start_time, end_time, available_count, server_decision);
-         g_pending_probe_request_id = "";
-         g_pending_probe_attempts = 0;
-      }
-      else
-      {
-         PrintFormat("Axetos MT5 Bridge: could not report availability result for %s %s; request remains pending.",
-                     resolved, interval);
-      }
-      if(probe_error != 0 && !history_sync_pending)
-         PrintFormat("Axetos MT5 Bridge: %s availability probe failed for %s (%d).", interval, resolved, probe_error);
-      return true;
-   }
-
-   if(command != "BACKFILL" || part_count != 6)
-      return true;
-
-   string start_time = parts[3];
-   string end_time = parts[4];
-   string request_id = parts[5];
-   StringTrimLeft(start_time); StringTrimRight(start_time);
-   StringTrimLeft(end_time); StringTrimRight(end_time);
-   StringTrimLeft(request_id); StringTrimRight(request_id);
-
-   PrintFormat("Axetos MT5 Bridge: download started for %s %s, %s through %s; request=%s.",
-               resolved, interval, start_time, end_time, request_id);
-   g_last_history_progress_log = TimeCurrent();
-
-   bool completed = false;
-   int copied = 0;
-   int stored = 0;
-   int skipped = 0;
-   int copy_error = 0;
-   ENUM_TIMEFRAMES requested_timeframe = IntervalTimeframe(interval);
-   if(requested_timeframe != PERIOD_CURRENT && resolved != "" && SymbolSelect(resolved, true))
-      completed = SendCandlesForDateRange(resolved, requested_timeframe, interval, start_time, end_time,
-                                          copied, stored, skipped, copy_error, request_id);
-   PrintFormat("Axetos MT5 Bridge: CopyRates returned %d bars for %s %s.", copied, resolved, interval);
-   bool unavailable = (!completed && copy_error == 4401);
-
-   string result_path = "/api/market-data/mt5/repair-result?providerKey=" + InpProviderKey +
-                        "&terminalInstanceId=" + g_terminal_id +
-                        "&providerSymbol=" + symbol +
-                        "&interval=" + interval + "&completed=" + (completed ? "true" : "false") +
-                        "&barsReceived=" + IntegerToString(copied) +
-                        "&barsInserted=" + IntegerToString(stored) +
-                        "&unavailable=" + (unavailable ? "true" : "false") +
-                        "&errorCode=" + IntegerToString(copy_error) +
-                        "&requestId=" + request_id;
-   string result_response = "";
-   bool result_reported = PostJsonText(result_path, "{}", result_response);
-   if(result_reported)
-   {
-      StringTrimLeft(result_response); StringTrimRight(result_response);
-      PrintFormat("Axetos MT5 Bridge: stored/skipped result for %s %s; received=%d, stored=%d, skipped=%d; server acknowledged=%s.",
-                  resolved, interval, copied, stored, skipped, result_response);
-      PrintFormat("Axetos MT5 Bridge: next range will be requested after server acknowledgement for request=%s.", request_id);
-   }
-   else
-      PrintFormat("Axetos MT5 Bridge: could not acknowledge backfill result for %s %s; request=%s remains in flight.",
-                  resolved, interval, request_id);
-   return true;
-}
-
 void RefreshServerSelection()
 {
    string path = "/api/market-data/mt5/enabled-symbols.txt?providerKey=" + InpProviderKey +
@@ -924,7 +492,6 @@ void RefreshServerSelection()
       for(int i = 0; i < ArraySize(g_symbols); i++)
          SymbolSelect(g_symbols[i], false);
       ArrayResize(g_symbols, 0);
-      ArrayResize(g_last_m1_bar, 0);
       Print("Axetos MT5 Bridge: server selection is empty; streaming stopped.");
       return;
    }
@@ -976,11 +543,9 @@ void RefreshServerSelection()
    }
 
    ArrayResize(g_symbols, accepted);
-   ArrayResize(g_last_m1_bar, accepted);
    for(int i = 0; i < accepted; i++)
    {
       g_symbols[i] = resolved[i];
-      g_last_m1_bar[i] = iTime(resolved[i], PERIOD_M1, 0);
    }
 
    PrintFormat("Axetos MT5 Bridge: server selection applied; streaming-symbols=%d.", accepted);
@@ -1229,15 +794,7 @@ bool PostJson(string path, string payload)
    return false;
 }
 
-string CanonicalSymbol(string provider_symbol)
-{
-   string description = SymbolInfoString(provider_symbol, SYMBOL_DESCRIPTION);
-   string path = SymbolInfoString(provider_symbol, SYMBOL_PATH);
-   string currency_base = SymbolInfoString(provider_symbol, SYMBOL_CURRENCY_BASE);
-   string currency_profit = SymbolInfoString(provider_symbol, SYMBOL_CURRENCY_PROFIT);
-   string asset_class = ClassifyAsset(provider_symbol, description, path, currency_base, currency_profit);
-   return CanonicalDiscoveredSymbol(provider_symbol, asset_class, currency_base, currency_profit);
-}
+string CanonicalSymbol(string provider_symbol) { return provider_symbol; }
 
 datetime BrokerTimeToUtc(datetime broker_time)
 {

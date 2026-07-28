@@ -49,6 +49,6 @@ def test_bridge_updates_provider_runtime_and_feed(tmp_path):
         assert last.tzinfo is not None
         assert abs((datetime.now().astimezone() - last).total_seconds()) < 5
         assert worker.feed.reports()[0]["instrument"] == "BTC/USD"
-        assert store.read_candles("BTC/USD", "1m", provider="ICMarkets.MT5")
+        assert store.read_candles("BTC/USD", "1m", provider="ICMarkets.MT5") == []
     finally:
         bridge.shutdown()

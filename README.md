@@ -1,4 +1,13 @@
-## Version 0.61.7
+## Version 0.61.8
+
+### Official completed-minute polling
+
+MT5 live ticks and heartbeats are now used only for feed health, current bid/ask, and runtime status. They never create or persist M1 candles. Bridge v1.29 waits a configurable short delay after each minute boundary, requests the previous completed M1 candle directly from MT5, and force-upserts that official timestamp. If MT5 cannot return the minute immediately, no candle is fabricated; the authoritative 24-hour repair recovers it later.
+
+### Repair-window catch-up
+
+Manual and automatic 24-hour M1 refreshes record their start and finish times. After the main per-instrument refresh completes, the coordinator performs one additional authoritative M1 pass covering the repair runtime (with a one-minute safety margin), then reports `repair.recent_m1_catchup_completed`. This closes minutes that may have completed while the longer repair was running.
+
 
 Version 0.61.6 removes the recent-M1 verification gate. During the manual or automatic 24-hour refresh, every M1 candle returned by MT5 is force-upserted by exact provider/instrument/timestamp. Existing rows at returned timestamps are overwritten, missing rows are inserted, and timestamps not returned by MT5 are left untouched. No count, alignment, chart-path, quality, or provenance check can reject the official write. Instruments are still processed sequentially; after each timestamp upsert completes, higher intervals are rebuilt and the coordinator advances. A derived-timeframe rebuild warning is logged without undoing or rejecting the authoritative M1 replacement.
 
@@ -10,11 +19,12 @@ Version 0.61.5 makes the recent 24-hour M1 refresh strictly sequential per instr
 
 ## Version 0.61.3
 
-Version 0.61.3 simplifies recent live-candle verification. MT5 live observations build provisional one-minute candles in memory and individual one-second ticks are no longer persisted by the MT5 bridge. The manual and automatic recent-M1 repair now request the complete previous 24-hour M1 window for every configured instrument and replace every candle returned by MT5, rather than trying to infer bad candles from gaps or chart shapes. Provider-confirmed M1 candles receive authoritative provenance and the affected higher intervals are rebuilt afterward.
+Version 0.61.3 introduced authoritative recent-M1 replacement and stopped persisting individual one-second ticks. As of v0.61.8, live observations no longer build provisional candles at all; official completed M1 candles are polled directly from MT5 each minute.
 
 ### Recent M1 authority
 
-- Live observations update the current provisional M1 candle.
+- Live observations update feed health and current bid/ask only.
+- Completed M1 candles are polled directly from MT5 after each minute boundary.
 - Individual MT5 ticks are not stored in the `ticks` table.
 - The last 24 hours are downloaded as official MT5 M1 candles.
 - Every returned M1 candle is inserted or replaced, including non-flat candles.

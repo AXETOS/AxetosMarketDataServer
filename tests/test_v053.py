@@ -19,7 +19,7 @@ def _tick(second: int, bid: str = "64000", ask: str = "64002") -> BridgeTick:
     )
 
 
-def test_tick_ingestion_updates_latest_quote_and_candle_through_one_path(tmp_path: Path) -> None:
+def test_tick_ingestion_updates_latest_quote_without_building_candles(tmp_path: Path) -> None:
     store = MarketDataStore(str(tmp_path / "market.sqlite")); store.initialize()
     store.upsert_symbol_policy("ICMarkets.MT5", "BTCUSD", "BTC/USD")
     bridge = Mt5BridgeService(store)
@@ -32,8 +32,7 @@ def test_tick_ingestion_updates_latest_quote_and_candle_through_one_path(tmp_pat
         assert quote is not None
         assert quote["bid"] == "64000"
         candles = store.read_candles("BTC/USD", "1m", provider="ICMarkets.MT5")
-        assert len(candles) == 1
-        assert candles[0].complete is False
+        assert candles == []
     finally:
         bridge.shutdown()
 

@@ -98,6 +98,7 @@ class BridgeCandlesRequest(BaseModel):
     request_id: str | None = Field(default=None, validation_alias=AliasChoices("RequestId", "requestId"), serialization_alias="RequestId")
     chunk_index: int = Field(default=0, validation_alias=AliasChoices("ChunkIndex", "chunkIndex"), serialization_alias="ChunkIndex")
     chunk_count: int = Field(default=1, validation_alias=AliasChoices("ChunkCount", "chunkCount"), serialization_alias="ChunkCount")
+    authoritative: bool = Field(default=False, validation_alias=AliasChoices("Authoritative", "authoritative"), serialization_alias="Authoritative")
     model_config = {"populate_by_name": True}
 
 
@@ -305,12 +306,8 @@ class Mt5BridgeService:
                 if self._observation_sink is not None:
                     self._observation_sink(tick, False)
                 return False
-            self._service.run([tick])
-            self.store.set_candle_provenance(
-                tick.provider, tick.instrument, "1m", bucket_start(tick.timestamp, "1m"),
-                source_kind="live_observation", source_timeframe=None, quality_rank=200,
-                coverage_complete=False, repair_run_id=None,
-            )
+            # Live observations are feed-health/current-price evidence only.
+            # Official M1 candles are polled from MT5 after each minute closes.
             self._last_ingested[key] = tick.timestamp
             if self._observation_sink is not None:
                 self._observation_sink(tick, True)
@@ -320,11 +317,10 @@ class Mt5BridgeService:
         self, request: BridgeCandlesRequest, *, replace_flatline: bool = False, replace_all: bool = False,
         replace_window: tuple[datetime, datetime] | None = None,
     ) -> int:
-        """Import provider-confirmed historical bars without overwriting existing rows.
+        """Import provider-confirmed MT5 bars.
 
-        Live minute candles are built exclusively from ticks. Historical M1 bars use the
-        market-closure flatline filter; H1 and D1 remain honest coarse source data and are
-        never expanded into fabricated minute history.
+        Authoritative M1 submissions force-upsert the exact MT5 timestamp. Live ticks and
+        heartbeats never create candles; they are used only for feed health and quotes.
         """
         self.validate_identity(request.provider_key, request.terminal_instance_id)
         interval = request.interval.lower()
@@ -345,17 +341,18 @@ class Mt5BridgeService:
                 continue
         values = (
             sorted(incoming, key=lambda item: item.open_time)
-            if interval == "1m" and replace_all
+            if interval == "1m" and (replace_all or request.authoritative)
             else self._sanitize_historical_minutes(incoming)
             if interval == "1m"
             else sorted(incoming, key=lambda item: item.open_time)
         )
+        effective_replace_all = replace_all or request.authoritative
         written = (
             self._insert_historical_low_priority(
-                values, replace_flatline=replace_flatline, replace_all=replace_all,
+                values, replace_flatline=replace_flatline, replace_all=effective_replace_all,
                 replace_window=replace_window,
             )
-            if request.request_id else self.store.upsert_candles(values)
+            if request.request_id or effective_replace_all else self.store.upsert_candles(values)
         )
         if values and not request.request_id:
             from .aggregation import CANONICAL_DERIVED_TIMEFRAMES, CandleAggregator

@@ -9,7 +9,7 @@ from axetos_market_data.storage import MarketDataStore
 from axetos_market_data.web import create_app
 
 
-def test_live_bridge_clock_skew_uses_receipt_utc_for_candle(tmp_path):
+def test_live_bridge_clock_skew_does_not_create_candle(tmp_path):
     store = MarketDataStore(tmp_path / "market.sqlite")
     store.initialize()
     bridge = Mt5BridgeService(store)
@@ -22,9 +22,7 @@ def test_live_bridge_clock_skew_uses_receipt_utc_for_candle(tmp_path):
                                bid=Decimal("64000"), ask=Decimal("64010"))],
         ))
         assert accepted == 1
-        candles = store.read_candles("BTC/USD", "1m", provider="ICMarkets.MT5")
-        assert len(candles) == 1
-        assert abs(candles[0].open_time - datetime.now(UTC)) < timedelta(minutes=2)
+        assert store.read_candles("BTC/USD", "1m", provider="ICMarkets.MT5") == []
     finally:
         bridge.shutdown()
 

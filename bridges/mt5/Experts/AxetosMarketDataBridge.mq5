@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.27"
+#property version   "1.29"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -10,6 +10,7 @@ input bool   InpDiscoverAllSymbols = true;
 input int    InpDiscoveryBatchSize = 75;
 input int    InpRequestTimeoutMs   = 5000;
 input int    InpHeartbeatSeconds   = 1;
+input int    InpCompletedM1DelaySeconds = 3;
 input int    InpSelectionRefreshSeconds = 15;
 input bool   InpSendHistoricalBars = false; // Full history is server-controlled.
 input int    InpHttpMaxBackoffSeconds = 30;
@@ -47,7 +48,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.28: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.29: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -75,10 +76,12 @@ void OnTimer()
       RefreshServerSelection();
    }
 
-   // Live candles are built by the server from this single tick stream.
+   // Live ticks are feed-health/current-price evidence only. Official M1 candles
+   // are polled from MT5 after the previous minute has closed.
    SendCurrentTicks();
+   SendPreviousCompletedM1();
 
-   // Server-controlled full-history requests are polled after live ticks.
+   // Server-controlled full-history requests are polled after live traffic.
    RefreshRepairRequest();
 }
 
@@ -428,6 +431,58 @@ void SendCurrentTicks()
       "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"ticks\":[%s]}",
       JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), items);
    PostJson("/api/market-data/ingest/mt5/ticks", json);
+}
+
+void SendPreviousCompletedM1()
+{
+   datetime now = TimeCurrent();
+   int delay = MathMax(1, MathMin(15, InpCompletedM1DelaySeconds));
+   if(TimeSeconds(now) < delay)
+      return;
+
+   datetime current_minute = (datetime)((long)now - ((long)now % 60));
+   datetime completed_open = current_minute - 60;
+   datetime completed_end = completed_open + 59;
+
+   for(int i = 0; i < ArraySize(g_symbols); i++)
+   {
+      if(i < ArraySize(g_last_m1_bar) && g_last_m1_bar[i] == completed_open)
+         continue;
+
+      string symbol = g_symbols[i];
+      MqlRates rates[];
+      ArraySetAsSeries(rates, false);
+      ResetLastError();
+      int copied = CopyRates(symbol, PERIOD_M1, completed_open, completed_end, rates);
+      int copy_error = GetLastError();
+      if(copied <= 0)
+      {
+         // Do not manufacture a candle. A later 24-hour refresh will recover a
+         // minute that MT5 cannot return immediately after its boundary.
+         ResetLastError();
+         continue;
+      }
+
+      int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+      MqlRates candle = rates[copied - 1];
+      string json = StringFormat(
+         "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"1m\",\"authoritative\":true,\"candles\":[{\"timeUtc\":\"%s\",\"open\":%s,\"high\":%s,\"low\":%s,\"close\":%s,\"tickVolume\":%I64d}]}",
+         JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), JsonEscape(symbol),
+         JsonEscape(CanonicalSymbol(symbol)), IsoUtc(CandleTimeToUtc(candle.time, "1m")),
+         DoubleToString(candle.open, digits), DoubleToString(candle.high, digits),
+         DoubleToString(candle.low, digits), DoubleToString(candle.close, digits), candle.tick_volume);
+
+      string response = "";
+      if(PostJsonText("/api/market-data/ingest/mt5/candles", json, response))
+      {
+         if(i < ArraySize(g_last_m1_bar))
+            g_last_m1_bar[i] = completed_open;
+      }
+      else if(copy_error != 0)
+      {
+         ResetLastError();
+      }
+   }
 }
 
 bool SendCandles(string symbol, ENUM_TIMEFRAMES timeframe, string interval, int count, int start_pos, int &copied_out)

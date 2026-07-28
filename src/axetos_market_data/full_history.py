@@ -81,6 +81,8 @@ class FullHistoryJob:
     completed_at: datetime | None = None
     repair_started_at: datetime | None = None
     repair_completed_at: datetime | None = None
+    recent_refresh_started_at: datetime | None = None
+    recent_refresh_completed_at: datetime | None = None
     workflow: str = "full"
     repair_pass: int = 0
 
@@ -169,6 +171,7 @@ class FullHistoryBackfillManager:
                 job_id=uuid.uuid4().hex, provider_key=provider_key,
                 created_at=self._now_factory(), instruments=items,
                 phase="download", workflow=workflow,
+                recent_refresh_started_at=self._now_factory() if workflow == "recent_m1" else None,
             )
             self._jobs[job.job_id] = job
             self._provider_job[provider_key] = job.job_id
@@ -189,6 +192,8 @@ class FullHistoryBackfillManager:
             if job is None or job.provider_key != provider_key or job.status != "repairing":
                 return False
             job.repair_pass += 1
+            if job.recent_refresh_started_at is None:
+                job.recent_refresh_started_at = self._now_factory()
             job.status = "running"
             job.phase = "recent_m1_download"
             job.active_index = 0
@@ -259,7 +264,14 @@ class FullHistoryBackfillManager:
             job = self._jobs.get(job_id)
             if job is None or job.provider_key != provider_key:
                 return None
-            return {"workflow": job.workflow, "repair_pass": job.repair_pass, "status": job.status, "phase": job.phase}
+            return {
+                "workflow": job.workflow, "repair_pass": job.repair_pass,
+                "status": job.status, "phase": job.phase,
+                "created_at": job.created_at,
+                "repair_started_at": job.repair_started_at,
+                "recent_refresh_started_at": job.recent_refresh_started_at,
+                "recent_refresh_completed_at": job.recent_refresh_completed_at,
+            }
 
     def request_context(self, provider_key: str, request_id: str | None) -> dict[str, object] | None:
         """Return immutable context for the provider's active MT5 history request."""

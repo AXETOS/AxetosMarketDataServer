@@ -10,7 +10,7 @@ from axetos_market_data.bridge import (
 from axetos_market_data.storage import MarketDataStore
 
 
-def test_bridge_quote_builds_provider_scoped_candle(tmp_path):
+def test_bridge_quote_updates_provider_scoped_quote_without_candle(tmp_path):
     store = MarketDataStore(tmp_path / "market.sqlite")
     store.initialize()
     bridge = Mt5BridgeService(store)
@@ -28,16 +28,13 @@ def test_bridge_quote_builds_provider_scoped_candle(tmp_path):
             )],
         ))
         assert accepted == 1
-        candles = store.read_candles("BTC/USD", "1m", provider="ICMarkets.MT5")
-        assert len(candles) == 1
-        assert candles[0].open_time.tzinfo is not None
-        assert abs((datetime.now().astimezone() - candles[0].open_time).total_seconds()) < 60
-        assert candles[0].complete is False
+        assert store.read_candles("BTC/USD", "1m", provider="ICMarkets.MT5") == []
+        assert store.latest_bridge_quote("BTC/USD", "ICMarkets.MT5")["bid"] == "64478"
     finally:
         bridge.shutdown()
 
 
-def test_bridge_providers_do_not_share_quotes_or_candles(tmp_path):
+def test_bridge_providers_do_not_share_quotes_and_do_not_build_candles(tmp_path):
     store = MarketDataStore(tmp_path / "market.sqlite")
     store.initialize()
     bridge = Mt5BridgeService(store)
@@ -53,8 +50,8 @@ def test_bridge_providers_do_not_share_quotes_or_candles(tmp_path):
         ))
         ic = store.read_candles("BTC/USD", "1m", provider="ICMarkets.MT5")
         oa = store.read_candles("BTC/USD", "1m", provider="Oanda.MT5")
-        assert ic[0].close == Decimal("64005")
-        assert oa[0].close == Decimal("65010")
+        assert ic == []
+        assert oa == []
         assert store.latest_bridge_quote("BTC/USD", "ICMarkets.MT5")["bid"] == "64000"
         assert store.latest_bridge_quote("BTC/USD", "Oanda.MT5")["bid"] == "65000"
     finally:

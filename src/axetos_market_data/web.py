@@ -300,13 +300,58 @@ def create_app(
             workflow = str(context.get("workflow", "full"))
             repair_pass = int(context.get("repair_pass", 0))
 
-            # Recent-M1 jobs already verified and rebuilt every instrument before the
-            # coordinator advanced. Do not perform a second all-instrument repair pass.
+            # The first authoritative recent-M1 pass may itself take several minutes.
+            # Refresh that exact run window once more before reporting completion so
+            # no completed minute is lost while the 24-hour operation was active.
+            needs_catchup = (
+                (workflow == "recent_m1" and repair_pass == 0)
+                or (workflow == "full" and repair_pass == 1)
+            )
             if workflow == "recent_m1" or repair_pass > 0:
+                started = context.get("recent_refresh_started_at") or context.get("created_at")
+                finished = datetime.now(UTC)
+                if needs_catchup and isinstance(started, datetime):
+                    catchup_start = started.astimezone(UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
+                    catchup_end = finished.astimezone(UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
+                    if catchup_end >= catchup_start:
+                        ranges = {
+                            instrument: [PlannedRange("1m", catchup_start, catchup_end, 4)]
+                            for instrument in instruments
+                        }
+                        events.record(
+                            "info", "repair.recent_m1_catchup_started",
+                            "Repair-window M1 catch-up refresh started",
+                            provider=provider,
+                            details={
+                                "job_id": job_id,
+                                "repair_started_at": started.isoformat(),
+                                "repair_download_finished_at": finished.isoformat(),
+                                "catchup_from_utc": catchup_start.isoformat(),
+                                "catchup_to_utc": catchup_end.isoformat(),
+                                "instruments": len(instruments),
+                            },
+                        )
+                        if full_history.resume_targeted_after_repair(provider, job_id, ranges):
+                            return
+                events.record(
+                    "info", "repair.recent_m1_catchup_completed",
+                    "Repair-window M1 catch-up refresh completed",
+                    provider=provider,
+                    details={
+                        "job_id": job_id,
+                        "repair_started_at": started.isoformat() if isinstance(started, datetime) else None,
+                        "repair_finished_at": finished.isoformat(),
+                        "repair_pass": repair_pass,
+                        "instruments": len(instruments),
+                    },
+                )
                 full_history.complete_repair(provider, job_id, {
-                    "recent_m1_mode": "sequential_authoritative_refresh",
-                    "instruments_verified_sequentially": len(instruments),
+                    "recent_m1_mode": "sequential_authoritative_refresh_with_catchup",
+                    "instruments_refreshed_sequentially": len(instruments),
                     "recent_m1_window_hours": 24,
+                    "repair_started_at": started.isoformat() if isinstance(started, datetime) else None,
+                    "repair_finished_at": finished.isoformat(),
+                    "catchup_completed": True,
                 })
                 return
 
@@ -588,10 +633,10 @@ def create_app(
     def bridge_candles(request: BridgeCandlesRequest) -> dict[str, object]:
         received = len(request.candles)
         context = full_history.request_context(request.provider_key, request.request_id)
-        replace_all = bool(context) and (
+        replace_all = request.authoritative or (bool(context) and (
             str(context.get("workflow")) == "recent_m1"
             or str(context.get("phase")) == "recent_m1_download"
-        ) and str(context.get("timeframe")) == "1m"
+        ) and str(context.get("timeframe")) == "1m")
         replace_flatline = False
         removed_off_minute = 0
         if replace_all and request.chunk_index == 1 and context is not None:

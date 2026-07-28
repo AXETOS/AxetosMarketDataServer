@@ -4,60 +4,48 @@ from pathlib import Path
 from axetos_market_data.full_history import FullHistoryBackfillManager
 
 
-def test_one_missing_candle_dispatches_backfill_and_waits_for_storage_ack() -> None:
+def test_one_missing_candle_is_planned_then_downloaded_and_acknowledged() -> None:
     now = datetime(2026, 7, 27, tzinfo=UTC)
+    leaf_start = now - timedelta(minutes=59)
 
-    def local_count(_provider, _instrument, _timeframe, start, end):
-        return 1400 if end - start > timedelta(days=2) else 1434
+    def local_count(_provider, _instrument, timeframe, start, end):
+        if timeframe == "1m" and start >= leaf_start:
+            return 1434
+        return 0
 
-    manager = FullHistoryBackfillManager(
-        local_count,
-        pressure_probe=lambda: False,
-        now_factory=lambda: now,
-    )
+    manager = FullHistoryBackfillManager(local_count, now_factory=lambda: now)
     manager.start("ICMarkets.MT5", [("SOLUSD", "SOL/USD")])
 
-    for timeframe, days, count in (("1m", 30, 43000), ("1h", 700, 15000), ("1d", 2500, 2500)):
-        discovery = manager.next_request("ICMarkets.MT5").split("|")
-        assert discovery[:3] == ["DISCOVER", "SOLUSD", timeframe]
-        manager.availability_result(
-            "ICMarkets.MT5", discovery[5], earliest=now - timedelta(days=days), latest=now, count=count
-        )
-
-    availability = manager.next_request("ICMarkets.MT5")
-    availability_parts = availability.split("|")
-    decision = manager.availability_result(
-        "ICMarkets.MT5",
-        availability_parts[5],
-        earliest=now - timedelta(days=1),
-        latest=now,
-        count=1435,
+    discovery = manager.next_request("ICMarkets.MT5").split("|")
+    manager.availability_result(
+        "ICMarkets.MT5", discovery[5], earliest=leaf_start, latest=now, count=1435
     )
+    for _ in ("1h", "1d"):
+        request = manager.next_request("ICMarkets.MT5").split("|")
+        manager.availability_result("ICMarkets.MT5", request[5], earliest=None, latest=None, count=0)
 
-    assert decision == "BACKFILL|1435|1434"
-    download = manager.next_request("ICMarkets.MT5")
-    download_parts = download.split("|")
-    assert download_parts[:5] == [
-        "BACKFILL",
-        "SOLUSD",
-        "1m",
-        availability_parts[3],
-        availability_parts[4],
-    ]
+    final_decision = ""
+    for _ in range(20):
+        request = manager.next_request("ICMarkets.MT5")
+        if request.startswith("BACKFILL|"):
+            download = request.split("|")
+            break
+        parts = request.split("|")
+        final_decision = manager.availability_result(
+            "ICMarkets.MT5", parts[5], earliest=datetime.fromisoformat(parts[3]),
+            latest=datetime.fromisoformat(parts[4]), count=1435,
+        )
+    else:
+        raise AssertionError("download was not dispatched")
+
+    assert final_decision == "PLAN_MISSING|1435|1434"
+    assert download[:3] == ["BACKFILL", "SOLUSD", "1m"]
     assert manager.next_request("ICMarkets.MT5") == ""
 
     acknowledgement = manager.batch_result(
-        "ICMarkets.MT5",
-        download_parts[5],
-        bars_received=1435,
-        bars_inserted=1,
-        completed=True,
+        "ICMarkets.MT5", download[5], bars_received=1435, bars_inserted=1, completed=True
     )
     assert acknowledgement == "STORED|1435|1|1434"
-
-    next_range = manager.next_request("ICMarkets.MT5")
-    assert next_range.startswith("AVAILABILITY|SOLUSD|1m|")
-    assert next_range.split("|")[3] != availability_parts[3]
 
 
 def test_bridge_and_server_expose_explicit_storage_handshake() -> None:

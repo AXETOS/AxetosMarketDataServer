@@ -3,63 +3,70 @@ from __future__ import annotations
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Callable
 
 from .clock import server_now
 
 
 @dataclass(frozen=True, slots=True)
-class HistoryTier:
+class PlannedRange:
     timeframe: str
     start: datetime
     end: datetime
-    batch_span: timedelta
-    availability_span: timedelta | None = None
+    depth: int
 
 
 @dataclass(slots=True)
 class InstrumentProgress:
     provider_symbol: str
     instrument: str
+    provider_key: str = ""
     status: str = "queued"
-    tier_index: int = 0
+    phase: str = "discovery"
     timeframe: str | None = None
-    tier_start: datetime | None = None
-    tier_end: datetime | None = None
     cursor_start: datetime | None = None
     current_end: datetime | None = None
     current_request_id: str | None = None
     request_kind: str | None = None
     dispatched_at: datetime | None = None
     dispatch_attempts: int = 0
+    retry_count: int = 0
     last_result: str | None = None
+    error: str | None = None
+    last_error_code: int | None = None
     available_count: int = 0
     local_count: int = 0
     earliest_available: datetime | None = None
     latest_available: datetime | None = None
-    batches_completed: int = 0
+    discovery_index: int = 0
+    discovery_complete: bool = False
+    discovery_boundaries: dict[str, datetime | None] = field(default_factory=dict)
+    discovery_latest: dict[str, datetime | None] = field(default_factory=dict)
+    discovery_counts: dict[str, int] = field(default_factory=dict)
+    discovery_local_counts: dict[str, int] = field(default_factory=dict)
+    discovery_complete_timeframes: set[str] = field(default_factory=set)
+    planning_queue: list[PlannedRange] = field(default_factory=list)
+    missing_ranges: list[PlannedRange] = field(default_factory=list)
+    download_index: int = 0
+    bad_ranges: list[dict[str, object]] = field(default_factory=list)
     ranges_probed: int = 0
     ranges_skipped_existing: int = 0
     ranges_unavailable: int = 0
     bars_available: int = 0
     bars_received: int = 0
     bars_inserted: int = 0
-    retry_count: int = 0
-    error: str | None = None
-    last_error_code: int | None = None
-    scan_phase: str = "fine"
+    batches_completed: int = 0
+    # Compatibility/status fields retained for clients and older tests.
+    tier_index: int = 0
+    tier_start: datetime | None = None
+    tier_end: datetime | None = None
+    scan_phase: str = "discovery"
     coarse_start: datetime | None = None
     coarse_end: datetime | None = None
     fine_end: datetime | None = None
     coarse_ranges_probed: int = 0
     fine_ranges_probed: int = 0
-    discovery_index: int = 0
-    discovery_complete: bool = False
-    discovery_boundaries: dict[str, datetime | None] = field(default_factory=dict)
-    discovery_counts: dict[str, int] = field(default_factory=dict)
-    discovery_local_counts: dict[str, int] = field(default_factory=dict)
-    discovery_complete_timeframes: set[str] = field(default_factory=set)
 
 
 @dataclass(slots=True)
@@ -68,18 +75,25 @@ class FullHistoryJob:
     provider_key: str
     created_at: datetime
     status: str = "running"
+    phase: str = "discovery"
     instruments: list[InstrumentProgress] = field(default_factory=list)
     active_index: int = 0
     completed_at: datetime | None = None
+    repair_started_at: datetime | None = None
+    repair_completed_at: datetime | None = None
 
 
 class FullHistoryBackfillManager:
-    """Availability-aware, tiered and low-priority MT5 history coordinator.
+    """Hierarchical planning-first MT5 history coordinator.
 
-    Every exact range is probed before it is downloaded. The server compares the
-    provider's confirmed candle count with local coverage and requests a download only
-    when the local database is missing rows. Existing rows are never overwritten.
+    The manager first discovers ten-year provider coverage, recursively narrows only
+    incomplete ranges, stores the complete missing-range plan, and only then issues
+    BACKFILL commands. Unavailable ranges are marked bad and skipped so a provider
+    can never freeze the job indefinitely.
     """
+
+    _DISCOVERY_TIMEFRAMES = ("1m", "1h", "1d")
+    _LEAF_DEPTH = {"1d": 2, "1h": 3, "1m": 4}  # year/month, +day, +hour
 
     def __init__(
         self,
@@ -87,61 +101,31 @@ class FullHistoryBackfillManager:
         local_bounds: Callable[[str, str, str, datetime, datetime], tuple[datetime | None, datetime | None]] | None = None,
         *,
         on_instrument_completed: Callable[[str, str], None] | None = None,
+        on_download_completed: Callable[[str, str, list[str]], None] | None = None,
+        on_event: Callable[[str, str, str, dict[str, object]], None] | None = None,
+        bad_range_recorder: Callable[[str, str, str, datetime, datetime, str, int | None], None] | None = None,
+        bad_range_probe: Callable[[str, str, str, datetime, datetime], bool] | None = None,
         pressure_probe: Callable[[], bool] | None = None,
         now_factory: Callable[[], datetime] = server_now,
         request_lease: timedelta = timedelta(seconds=30),
     ) -> None:
         self._local_count = local_count
         self._local_bounds = local_bounds
-        self._lock = threading.RLock()
         self._on_instrument_completed = on_instrument_completed
+        self._on_download_completed = on_download_completed
+        self._on_event = on_event
+        self._bad_range_recorder = bad_range_recorder
+        self._bad_range_probe = bad_range_probe
         self._pressure_probe = pressure_probe
         self._now_factory = now_factory
         self._request_lease = request_lease
+        self._lock = threading.RLock()
         self._jobs: dict[str, FullHistoryJob] = {}
         self._provider_job: dict[str, str] = {}
-        self._tiers_by_job: dict[str, list[HistoryTier]] = {}
 
     def set_pressure_probe(self, pressure_probe: Callable[[], bool] | None) -> None:
         with self._lock:
             self._pressure_probe = pressure_probe
-
-    def _build_tiers(self, item: InstrumentProgress | None = None) -> list[HistoryTier]:
-        """Build storage tiers from boundaries discovered directly from MT5.
-
-        Discovery asks MT5 once per timeframe for the complete ten-year window. The
-        returned earliest candle is the authoritative provider boundary. Storage
-        ranges are then constructed without probing any period older than that
-        boundary and without overlapping finer data with coarser tiers.
-        """
-        if item is None or not item.discovery_complete:
-            return []
-        now = self._now_factory().replace(second=0, microsecond=0)
-        m1 = item.discovery_boundaries.get("1m")
-        h1 = item.discovery_boundaries.get("1h")
-        d1 = item.discovery_boundaries.get("1d")
-        tiers: list[HistoryTier] = []
-        if m1 is not None and m1 <= now and "1m" not in item.discovery_complete_timeframes:
-            tiers.append(HistoryTier("1m", m1, now, timedelta(days=1)))
-        h1_end = min(now, m1 - timedelta(hours=1)) if m1 is not None else now
-        if h1 is not None and h1 <= h1_end and "1h" not in item.discovery_complete_timeframes:
-            tiers.append(HistoryTier("1h", h1, h1_end, timedelta(days=30)))
-        coarse_boundary = h1 if h1 is not None else m1
-        d1_end = min(now, coarse_boundary - timedelta(days=1)) if coarse_boundary is not None else now
-        if d1 is not None and d1 <= d1_end and "1d" not in item.discovery_complete_timeframes:
-            tiers.append(HistoryTier("1d", d1, d1_end, timedelta(days=365)))
-        return tiers
-
-    def _configure_discovery(self, item: InstrumentProgress) -> None:
-        timeframe = ("1m", "1h", "1d")[item.discovery_index]
-        now = self._now_factory().replace(second=0, microsecond=0)
-        item.timeframe = timeframe
-        item.tier_start = now - timedelta(days=365 * 10)
-        item.tier_end = now
-        item.cursor_start = item.tier_start
-        item.current_end = item.tier_end
-        item.scan_phase = "discovery"
-        item.status = "queued"
 
     def start(self, provider_key: str, symbols: list[tuple[str, str]]) -> dict[str, object]:
         with self._lock:
@@ -152,11 +136,12 @@ class FullHistoryBackfillManager:
                 job_id=uuid.uuid4().hex,
                 provider_key=provider_key,
                 created_at=self._now_factory(),
-                instruments=[InstrumentProgress(symbol, instrument) for symbol, instrument in symbols],
+                instruments=[InstrumentProgress(symbol, instrument, provider_key) for symbol, instrument in symbols],
             )
             self._jobs[job.job_id] = job
             self._provider_job[provider_key] = job.job_id
-            self._tiers_by_job[job.job_id] = []
+            self._emit("backfill.discovery_started", "Ten-year history discovery started", provider_key,
+                       {"job_id": job.job_id, "instruments": len(symbols)})
             return self._view(job)
 
     def next_request(self, provider_key: str) -> str:
@@ -168,27 +153,21 @@ class FullHistoryBackfillManager:
             if job.status != "running":
                 return ""
             item = job.instruments[job.active_index]
+
             if item.current_request_id:
-                # Exactly one command is delivered per provider at a time. Once a
-                # command has been handed to MT5, polling returns no work until the
-                # result is acknowledged. A bounded lease permits redelivery only
-                # when the bridge disappeared before reporting a result.
                 now = self._now_factory()
                 if item.dispatched_at is not None and now - item.dispatched_at < self._request_lease:
                     return ""
                 item.dispatched_at = now
                 item.dispatch_attempts += 1
-                item.status = "probing" if item.request_kind in {"availability", "discovery"} else "importing"
                 return self._format_request(item)
-            self._ensure_tier(job, item)
+
+            self._prepare_next(job, item)
             if item.status == "completed":
                 self._advance_completed(job)
                 return self.next_request(provider_key) if job.status == "running" else ""
-            item.current_request_id = uuid.uuid4().hex
-            item.request_kind = "discovery" if item.scan_phase == "discovery" else "availability"
-            item.status = "probing"
-            item.dispatched_at = self._now_factory()
-            item.dispatch_attempts = 1
+            if item.current_request_id is None:
+                return ""
             return self._format_request(item)
 
     def availability_result(
@@ -204,128 +183,23 @@ class FullHistoryBackfillManager:
             job, item = self._active_item(provider_key, request_id)
             if item is None or job is None:
                 return "IGNORED"
+            assert item.timeframe and item.cursor_start and item.current_end
+            timeframe, start, end = item.timeframe, item.cursor_start, item.current_end
+            provider_count = max(0, count)
+            local_count = self._local_count(provider_key, item.instrument, timeframe, start, end)
             item.ranges_probed += 1
-            if item.scan_phase == "coarse":
-                item.coarse_ranges_probed += 1
-            else:
-                item.fine_ranges_probed += 1
-            item.available_count = max(0, count)
+            item.available_count = provider_count
+            item.local_count = local_count
             item.earliest_available = earliest
             item.latest_available = latest
-            item.bars_available += max(0, count)
-            assert item.timeframe and item.cursor_start and item.current_end
-            item.local_count = self._local_count(
-                provider_key, item.instrument, item.timeframe, item.cursor_start, item.current_end
-            )
-            item.current_request_id = None
-            item.request_kind = None
-            item.dispatched_at = None
-            item.last_result = (
-                f"{item.scan_phase} availability confirmed: provider={count}, local={item.local_count}"
-            )
+            item.bars_available += provider_count
+            self._clear_request(item)
 
-            if item.scan_phase == "discovery":
-                boundary = earliest if count > 0 and earliest is not None else None
-                timeframe = item.timeframe
-                provider_count = max(0, count)
-                item.discovery_boundaries[timeframe] = boundary
-                item.discovery_counts[timeframe] = provider_count
-                item.discovery_local_counts[timeframe] = item.local_count
-                coverage_complete = False
-                if boundary is None:
-                    item.ranges_unavailable += 1
-                elif item.local_count >= provider_count:
-                    local_earliest: datetime | None = None
-                    local_latest: datetime | None = None
-                    if self._local_bounds is not None:
-                        local_earliest, local_latest = self._local_bounds(
-                            provider_key, item.instrument, timeframe, item.cursor_start, item.current_end
-                        )
-                    coverage_complete = (
-                        self._local_bounds is not None
-                        and local_earliest is not None and local_latest is not None
-                        and local_earliest <= boundary
-                        and latest is not None and local_latest >= latest
-                    )
-                if coverage_complete:
-                    item.discovery_complete_timeframes.add(timeframe)
-                    item.ranges_skipped_existing += 1
-                    item.last_result = (
-                        f"discovered {timeframe} coverage already complete: "
-                        f"provider={provider_count}, local={item.local_count}; no range checks required"
-                    )
-                else:
-                    missing_estimate = max(0, provider_count - item.local_count)
-                    item.last_result = (
-                        f"discovered {timeframe} boundary: "
-                        f"{boundary.isoformat() if boundary else 'unavailable'}; "
-                        f"provider={provider_count}, local={item.local_count}, "
-                        f"missing_at_least={missing_estimate}"
-                    )
-                item.discovery_index += 1
-                item.cursor_start = None
-                item.current_end = None
-                item.timeframe = None
-                item.tier_start = None
-                item.tier_end = None
-                if item.discovery_index < 3:
-                    self._configure_discovery(item)
-                else:
-                    item.discovery_complete = True
-                    item.tier_index = 0
-                    item.scan_phase = "fine"
-                    self._tiers_by_job[job.job_id] = self._build_tiers(item)
-                    self._ensure_tier(job, item)
-                if boundary is None:
-                    return f"UNAVAILABLE|{provider_count}|{item.local_count}"
-                if coverage_complete:
-                    return f"DISCOVERED_COMPLETE|{provider_count}|{item.local_count}|{boundary.isoformat()}"
-                return f"DISCOVERED_MISSING|{provider_count}|{item.local_count}|{boundary.isoformat()}"
-
-            if item.scan_phase == "coarse":
-                local_count = item.local_count
-                if count <= 0 or earliest is None or latest is None:
-                    item.ranges_unavailable += 1
-                    self._advance_coarse_range(job, item)
-                    return f"UNAVAILABLE|{count}|{local_count}"
-                if local_count >= count:
-                    item.ranges_skipped_existing += 1
-                    self._advance_coarse_range(job, item)
-                    return f"SKIP|{count}|{local_count}"
-                # Provider data exists and local coverage is incomplete. Drill
-                # into the tier's bounded fine ranges only after the broad probe
-                # has established that the provider actually has history.
-                assert item.coarse_start and item.coarse_end
-                item.scan_phase = "fine"
-                item.cursor_start = item.coarse_start
-                item.fine_end = item.coarse_end
-                item.current_end = min(
-                    item.fine_end, item.cursor_start + self._active_tier(job, item).batch_span - self._step(item.timeframe)
-                )
-                item.available_count = 0
-                item.local_count = 0
-                item.last_result = (
-                    f"coarse {item.timeframe} tier contains {count} provider candles; "
-                    f"drilling into bounded ranges"
-                )
-                return f"DRILLDOWN|{count}|{local_count}"
-
-            if count <= 0 or earliest is None or latest is None:
-                item.ranges_unavailable += 1
-                local_count = item.local_count
-                self._advance_range(job, item)
-                return f"UNAVAILABLE|{count}|{local_count}"
-            if item.local_count >= count:
-                item.ranges_skipped_existing += 1
-                local_count = item.local_count
-                self._advance_range(job, item)
-                return f"SKIP|{count}|{local_count}"
-            item.current_request_id = uuid.uuid4().hex
-            item.request_kind = "backfill"
-            item.status = "importing"
-            item.dispatched_at = None
-            item.dispatch_attempts = 0
-            return f"BACKFILL|{count}|{item.local_count}"
+            if item.phase == "discovery":
+                return self._handle_discovery(job, item, timeframe, start, end, earliest, latest,
+                                              provider_count, local_count)
+            return self._handle_planning(job, item, timeframe, start, end, earliest, latest,
+                                         provider_count, local_count)
 
     def batch_result(
         self,
@@ -342,145 +216,282 @@ class FullHistoryBackfillManager:
             job, item = self._active_item(provider_key, request_id)
             if item is None or job is None:
                 return "IGNORED"
-            item.last_error_code = error_code
-            item.dispatched_at = None
-            if unavailable:
-                item.ranges_unavailable += 1
-                item.retry_count = 0
-                item.error = f"Confirmed history became unavailable (MT5 error {error_code})"
-                item.last_result = item.error
-                self._advance_range(job, item)
-                return f"UNAVAILABLE|{max(0, bars_received)}|{max(0, bars_inserted)}|{max(0, bars_received - bars_inserted)}"
-            if not completed:
-                item.current_request_id = None
-                item.request_kind = None
-                item.retry_count += 1
-                item.status = "retrying"
-                item.error = f"Transient MT5 history failure; retry {item.retry_count}/3"
-                item.last_result = item.error
-                if item.retry_count >= 3:
-                    item.ranges_unavailable += 1
-                    item.retry_count = 0
-                    self._advance_range(job, item)
-                return f"ERROR|{max(0, bars_received)}|{max(0, bars_inserted)}|{max(0, bars_received - bars_inserted)}|{error_code or 0}"
-            item.retry_count = 0
-            item.error = None
-            item.batches_completed += 1
-            item.bars_received += max(0, bars_received)
-            item.bars_inserted += max(0, bars_inserted)
+            assert item.timeframe and item.cursor_start and item.current_end
             received = max(0, bars_received)
             inserted = max(0, min(bars_inserted, received))
             skipped = max(0, received - inserted)
-            item.last_result = f"batch stored: received={received}, inserted={inserted}, skipped={skipped}"
-            self._advance_range(job, item)
+            current = PlannedRange(item.timeframe, item.cursor_start, item.current_end,
+                                   self._LEAF_DEPTH[item.timeframe])
+            item.last_error_code = error_code
+
+            if unavailable:
+                self._mark_bad(item, current, "provider_unavailable", error_code)
+                self._advance_download(item)
+                return f"UNAVAILABLE|{received}|{inserted}|{skipped}"
+
+            if not completed:
+                item.retry_count += 1
+                item.error = f"Transient MT5 history failure; retry {item.retry_count}/3"
+                item.last_result = item.error
+                self._clear_request(item)
+                if item.retry_count >= 3:
+                    self._mark_bad(item, current, "retry_exhausted", error_code)
+                    item.retry_count = 0
+                    self._advance_download(item)
+                return f"ERROR|{received}|{inserted}|{skipped}|{error_code or 0}"
+
+            item.retry_count = 0
+            item.error = None
+            item.batches_completed += 1
+            item.bars_received += received
+            item.bars_inserted += inserted
+            item.last_result = f"download stored: received={received}, inserted={inserted}, skipped={skipped}"
+            self._emit("backfill.download_progress", "Missing history range stored", provider_key, {
+                "job_id": job.job_id, "instrument": item.instrument, "timeframe": item.timeframe,
+                "from_utc": item.cursor_start.isoformat(), "to_utc": item.current_end.isoformat(),
+                "received": received, "stored": inserted, "skipped": skipped,
+                "completed_ranges": item.download_index + 1, "planned_ranges": len(item.missing_ranges),
+            })
+            self._advance_download(item)
             return f"STORED|{received}|{inserted}|{skipped}"
 
-    def _ensure_tier(self, job: FullHistoryJob, item: InstrumentProgress) -> None:
-        if not item.discovery_complete:
+    def _handle_discovery(
+        self, job: FullHistoryJob, item: InstrumentProgress, timeframe: str,
+        start: datetime, end: datetime, earliest: datetime | None, latest: datetime | None,
+        provider_count: int, local_count: int,
+    ) -> str:
+        boundary = earliest if provider_count > 0 and earliest is not None else None
+        item.discovery_boundaries[timeframe] = boundary
+        item.discovery_latest[timeframe] = latest if provider_count > 0 else None
+        item.discovery_counts[timeframe] = provider_count
+        item.discovery_local_counts[timeframe] = local_count
+        complete = self._coverage_complete(job.provider_key, item.instrument, timeframe,
+                                           start, end, earliest, latest, provider_count, local_count)
+        if complete:
+            item.discovery_complete_timeframes.add(timeframe)
+            item.ranges_skipped_existing += 1
+        elif boundary is not None and latest is not None:
+            item.planning_queue.append(PlannedRange(timeframe, boundary, latest, 0))
+        else:
+            self._mark_bad(item, PlannedRange(timeframe, start, end, 0), "no_provider_history", None)
+
+        item.discovery_index += 1
+        item.last_result = (
+            f"discovered {timeframe}: provider={provider_count}, local={local_count}, "
+            f"complete={complete}, earliest={boundary.isoformat() if boundary else 'unavailable'}"
+        )
+        if item.discovery_index < len(self._DISCOVERY_TIMEFRAMES):
+            self._configure_discovery(item)
+        else:
+            item.discovery_complete = True
+            item.phase = "planning"
+            item.scan_phase = "planning"
+            job.phase = "planning"
+            self._emit("backfill.discovery_completed", "Ten-year history discovery completed", job.provider_key, {
+                "job_id": job.job_id, "instrument": item.instrument,
+                "provider_counts": dict(item.discovery_counts),
+                "local_counts": dict(item.discovery_local_counts),
+                "complete_timeframes": sorted(item.discovery_complete_timeframes),
+                "planning_roots": len(item.planning_queue),
+            })
+            item.status = "queued"
+
+        if boundary is None:
+            return f"UNAVAILABLE|{provider_count}|{local_count}"
+        return (f"DISCOVERED_COMPLETE|{provider_count}|{local_count}|{boundary.isoformat()}" if complete
+                else f"DISCOVERED_MISSING|{provider_count}|{local_count}|{boundary.isoformat()}")
+
+    def _handle_planning(
+        self, job: FullHistoryJob, item: InstrumentProgress, timeframe: str,
+        start: datetime, end: datetime, earliest: datetime | None, latest: datetime | None,
+        provider_count: int, local_count: int,
+    ) -> str:
+        current = PlannedRange(timeframe, start, end, self._current_depth(item))
+        if provider_count <= 0 or earliest is None or latest is None:
+            self._mark_bad(item, current, "no_provider_history", None)
+            item.status = "queued"
+            return f"BAD|{provider_count}|{local_count}"
+
+        if self._coverage_complete(job.provider_key, item.instrument, timeframe,
+                                   start, end, earliest, latest, provider_count, local_count):
+            item.ranges_skipped_existing += 1
+            item.last_result = f"planning range complete: provider={provider_count}, local={local_count}"
+            item.status = "queued"
+            return f"PLAN_COMPLETE|{provider_count}|{local_count}"
+
+        if current.depth >= self._LEAF_DEPTH[timeframe]:
+            item.missing_ranges.append(current)
+            item.last_result = f"planned missing leaf: {timeframe} {start.isoformat()}..{end.isoformat()}"
+            item.status = "queued"
+            return f"PLAN_MISSING|{provider_count}|{local_count}"
+
+        children = self._split(current)
+        if not children:
+            item.missing_ranges.append(PlannedRange(timeframe, start, end, self._LEAF_DEPTH[timeframe]))
+            item.status = "queued"
+            return f"PLAN_MISSING|{provider_count}|{local_count}"
+        # Depth-first planning finds a precise plan while retaining bounded memory.
+        item.planning_queue[0:0] = children
+        item.last_result = f"planning split into {len(children)} smaller ranges"
+        item.status = "queued"
+        return f"PLAN_SPLIT|{provider_count}|{local_count}|{len(children)}"
+
+    def _prepare_next(self, job: FullHistoryJob, item: InstrumentProgress) -> None:
+        if item.current_request_id is not None or item.status == "completed":
+            return
+        if item.phase == "discovery":
             if item.timeframe is None:
                 self._configure_discovery(item)
+            self._new_request(item, "discovery")
             return
-        tiers = self._tiers_by_job[job.job_id]
-        while item.tier_index < len(tiers):
-            tier = tiers[item.tier_index]
-            if tier.end >= tier.start:
-                item.timeframe = tier.timeframe
-                item.tier_start = tier.start
-                item.tier_end = tier.end
-                if item.cursor_start is None:
-                    item.cursor_start = tier.start
-                    item.scan_phase = "fine"
-                    item.current_end = min(
-                        tier.end, item.cursor_start + tier.batch_span - self._step(tier.timeframe)
-                    )
-                item.status = "queued"
+
+        if item.phase == "planning":
+            while item.planning_queue:
+                current = item.planning_queue.pop(0)
+                if self._bad_range_probe is not None and self._bad_range_probe(
+                    job.provider_key, item.instrument, current.timeframe, current.start, current.end
+                ):
+                    self._mark_bad(item, current, "previously_marked_bad", None, persist=False)
+                    continue
+                self._set_range(item, current)
+                item.tier_index = current.depth
+                self._new_request(item, "availability")
                 return
-            item.tier_index += 1
-        item.status = "completed"
-        if self._on_instrument_completed is not None:
-            self._on_instrument_completed(job.provider_key, item.instrument)
+            item.missing_ranges = self._merge_ranges(item.missing_ranges)
+            item.phase = "download"
+            item.scan_phase = "download"
+            job.phase = "download"
+            self._emit("backfill.plan_created", "Missing-history download plan created", job.provider_key, {
+                "job_id": job.job_id, "instrument": item.instrument,
+                "ranges": len(item.missing_ranges), "bad_ranges": len(item.bad_ranges),
+                "missing_by_timeframe": self._count_by_timeframe(item.missing_ranges),
+            })
+            if item.missing_ranges:
+                self._emit("backfill.download_started", "Missing-history download started", job.provider_key, {
+                    "job_id": job.job_id, "instrument": item.instrument,
+                    "ranges": len(item.missing_ranges),
+                })
+            self._prepare_next(job, item)
+            return
 
-    def _advance_range(self, job: FullHistoryJob, item: InstrumentProgress) -> None:
-        assert item.timeframe and item.current_end and item.tier_end
-        item.cursor_start = item.current_end + self._step(item.timeframe)
+        if item.phase == "download":
+            if item.download_index < len(item.missing_ranges):
+                current = item.missing_ranges[item.download_index]
+                self._set_range(item, current)
+                self._new_request(item, "backfill")
+                return
+            item.phase = "completed"
+            item.status = "completed"
+            self._emit("backfill.download_completed", "Missing-history download completed", job.provider_key, {
+                "job_id": job.job_id, "instrument": item.instrument,
+                "planned_ranges": len(item.missing_ranges), "bad_ranges": len(item.bad_ranges),
+                "candles_received": item.bars_received, "candles_stored": item.bars_inserted,
+                "candles_skipped": max(0, item.bars_received - item.bars_inserted),
+            })
+            if self._on_instrument_completed is not None:
+                self._on_instrument_completed(job.provider_key, item.instrument)
+
+    def _configure_discovery(self, item: InstrumentProgress) -> None:
+        timeframe = self._DISCOVERY_TIMEFRAMES[item.discovery_index]
+        now = self._now_factory().astimezone(UTC).replace(second=0, microsecond=0)
+        item.timeframe = timeframe
+        item.cursor_start = now - timedelta(days=3650)
+        item.current_end = now
+        item.tier_start = item.cursor_start
+        item.tier_end = item.current_end
+        item.scan_phase = "discovery"
+        item.status = "queued"
+
+    def _advance_download(self, item: InstrumentProgress) -> None:
+        self._clear_request(item)
+        item.download_index += 1
+        item.status = "queued"
+
+    def _new_request(self, item: InstrumentProgress, kind: str) -> None:
+        item.current_request_id = uuid.uuid4().hex
+        item.request_kind = kind
+        item.dispatched_at = self._now_factory()
+        item.dispatch_attempts = 1
+        item.status = "importing" if kind == "backfill" else "probing"
+
+    @staticmethod
+    def _set_range(item: InstrumentProgress, value: PlannedRange) -> None:
+        item.timeframe = value.timeframe
+        item.cursor_start = value.start
+        item.current_end = value.end
+        item.tier_start = value.start
+        item.tier_end = value.end
+        item.tier_index = value.depth
+
+    @staticmethod
+    def _clear_request(item: InstrumentProgress) -> None:
         item.current_request_id = None
         item.request_kind = None
         item.dispatched_at = None
         item.dispatch_attempts = 0
-        item.available_count = 0
-        item.local_count = 0
-        if item.scan_phase == "fine" and item.fine_end is not None and item.cursor_start > item.fine_end:
-            self._advance_coarse_range(job, item)
-            return
-        if item.cursor_start > item.tier_end:
-            self._complete_tier(item)
-        else:
-            tier = self._active_tier(job, item)
-            item.current_end = min(
-                item.tier_end, item.cursor_start + tier.batch_span - self._step(item.timeframe)
-            )
-        self._ensure_tier(job, item)
 
-    def _advance_coarse_range(self, job: FullHistoryJob, item: InstrumentProgress) -> None:
-        assert item.timeframe and item.coarse_end and item.tier_end
-        next_start = item.coarse_end + self._step(item.timeframe)
-        item.current_request_id = None
-        item.request_kind = None
-        item.dispatched_at = None
-        item.dispatch_attempts = 0
-        item.available_count = 0
-        item.local_count = 0
-        item.fine_end = None
-        if next_start > item.tier_end:
-            self._complete_tier(item)
-            self._ensure_tier(job, item)
-            return
-        tier = self._active_tier(job, item)
-        assert tier.availability_span is not None
-        item.scan_phase = "coarse"
-        item.coarse_start = next_start
-        item.coarse_end = min(
-            item.tier_end, next_start + tier.availability_span - self._step(item.timeframe)
-        )
-        item.cursor_start = item.coarse_start
-        item.current_end = item.coarse_end
-        self._ensure_tier(job, item)
+    def _coverage_complete(
+        self, provider: str, instrument: str, timeframe: str, start: datetime, end: datetime,
+        earliest: datetime | None, latest: datetime | None, provider_count: int, local_count: int,
+    ) -> bool:
+        if provider_count <= 0 or earliest is None or latest is None or local_count < provider_count:
+            return False
+        if self._local_bounds is None:
+            return local_count >= provider_count
+        local_earliest, local_latest = self._local_bounds(provider, instrument, timeframe, start, end)
+        return (local_earliest is not None and local_latest is not None
+                and local_earliest <= earliest and local_latest >= latest)
 
-    def _complete_tier(self, item: InstrumentProgress) -> None:
-        item.tier_index += 1
-        item.cursor_start = None
-        item.current_end = None
-        item.timeframe = None
-        item.tier_start = None
-        item.tier_end = None
-        item.coarse_start = None
-        item.coarse_end = None
-        item.fine_end = None
-        item.scan_phase = "fine"
+    @staticmethod
+    def _current_depth(item: InstrumentProgress) -> int:
+        return max(0, item.tier_index)
 
-    def _active_tier(self, job: FullHistoryJob, item: InstrumentProgress) -> HistoryTier:
-        return self._tiers_by_job[job.job_id][item.tier_index]
+    def _split(self, value: PlannedRange) -> list[PlannedRange]:
+        if value.depth == 0:
+            return self._calendar_parts(value, "year")
+        if value.depth == 1:
+            return self._calendar_parts(value, "month")
+        if value.depth == 2:
+            return self._calendar_parts(value, "day")
+        if value.depth == 3 and value.timeframe == "1m":
+            return self._calendar_parts(value, "hour")
+        return []
+
+    @staticmethod
+    def _calendar_parts(value: PlannedRange, unit: str) -> list[PlannedRange]:
+        start, end = value.start, value.end
+        parts: list[PlannedRange] = []
+        cursor = start
+        while cursor <= end:
+            if unit == "year":
+                boundary = datetime(cursor.year + 1, 1, 1, tzinfo=cursor.tzinfo)
+            elif unit == "month":
+                boundary = (datetime(cursor.year + 1, 1, 1, tzinfo=cursor.tzinfo)
+                            if cursor.month == 12 else datetime(cursor.year, cursor.month + 1, 1, tzinfo=cursor.tzinfo))
+            elif unit == "day":
+                boundary = datetime(cursor.year, cursor.month, cursor.day, tzinfo=cursor.tzinfo) + timedelta(days=1)
+            else:
+                boundary = cursor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            part_end = min(end, boundary - FullHistoryBackfillManager._step(value.timeframe))
+            if part_end >= cursor:
+                parts.append(PlannedRange(value.timeframe, cursor, part_end, value.depth + 1))
+            cursor = boundary
+        return parts
 
     @staticmethod
     def _step(timeframe: str) -> timedelta:
         return {"1m": timedelta(minutes=1), "1h": timedelta(hours=1), "1d": timedelta(days=1)}[timeframe]
 
-    def status(self, provider_key: str | None = None) -> dict[str, object]:
-        with self._lock:
-            jobs = [job for job in self._jobs.values() if provider_key is None or job.provider_key == provider_key]
-            return {"jobs": [self._view(job) for job in sorted(jobs, key=lambda x: x.created_at, reverse=True)]}
-
-    def _format_request(self, item: InstrumentProgress) -> str:
-        assert item.current_request_id and item.timeframe and item.cursor_start and item.current_end
-        command = "DISCOVER" if item.request_kind == "discovery" else ("AVAILABILITY" if item.request_kind == "availability" else "BACKFILL")
-        return "|".join((
-            command,
-            item.provider_symbol,
-            item.timeframe,
-            item.cursor_start.isoformat(),
-            item.current_end.isoformat(),
-            item.current_request_id,
-        ))
+    def _mark_bad(self, item: InstrumentProgress, value: PlannedRange, reason: str, error_code: int | None, *, persist: bool = True) -> None:
+        item.ranges_unavailable += 1
+        item.bad_ranges.append({
+            "timeframe": value.timeframe, "from_utc": value.start.isoformat(),
+            "to_utc": value.end.isoformat(), "reason": reason, "error_code": error_code,
+        })
+        item.last_result = f"bad range skipped: {value.timeframe} {value.start.isoformat()}..{value.end.isoformat()} ({reason})"
+        if persist and self._bad_range_recorder is not None:
+            # provider is resolved by the recorder closure in the web composition root.
+            self._bad_range_recorder(item.provider_key, item.instrument, value.timeframe, value.start, value.end, reason, error_code)
 
     def _active_job(self, provider_key: str) -> FullHistoryJob | None:
         job_id = self._provider_job.get(provider_key)
@@ -499,64 +510,133 @@ class FullHistoryBackfillManager:
     def _advance_completed(self, job: FullHistoryJob) -> None:
         while job.active_index < len(job.instruments) and job.instruments[job.active_index].status == "completed":
             job.active_index += 1
-        if job.active_index >= len(job.instruments):
-            job.status = "completed"
-            job.completed_at = self._now_factory()
+        if job.active_index >= len(job.instruments) and job.status == "running":
+            totals = self._totals(job)
+            self._emit("backfill.download_all_completed", "All planned history downloads completed", job.provider_key,
+                       {"job_id": job.job_id, **totals})
+            if self._on_download_completed is None:
+                job.status = "completed"
+                job.phase = "completed"
+                job.completed_at = self._now_factory()
+                self._emit("backfill.full_completed", "Full-history workflow completed", job.provider_key,
+                           {"job_id": job.job_id, **totals})
+            else:
+                job.status = "repairing"
+                job.phase = "repair"
+                job.repair_started_at = self._now_factory()
+                self._emit("repair.full_started", "Bottom-up candle repair started", job.provider_key,
+                           {"job_id": job.job_id, **totals})
+                self._on_download_completed(
+                    job.provider_key, job.job_id, [item.instrument for item in job.instruments]
+                )
+
+    def _format_request(self, item: InstrumentProgress) -> str:
+        assert item.current_request_id and item.timeframe and item.cursor_start and item.current_end
+        command = {"discovery": "DISCOVER", "availability": "AVAILABILITY", "backfill": "BACKFILL"}[item.request_kind or "availability"]
+        return "|".join((command, item.provider_symbol, item.timeframe,
+                         item.cursor_start.isoformat(), item.current_end.isoformat(), item.current_request_id))
+
+    def complete_repair(
+        self, provider_key: str, job_id: str, summary: dict[str, object], *, error: str | None = None
+    ) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.provider_key != provider_key or job.status != "repairing":
+                return
+            job.repair_completed_at = self._now_factory()
+            job.completed_at = job.repair_completed_at
+            job.status = "failed" if error else "completed"
+            job.phase = "failed" if error else "completed"
+            details = {"job_id": job.job_id, **self._totals(job), **summary}
+            if error:
+                details["error"] = error
+                self._emit("repair.full_failed", "Bottom-up candle repair failed", provider_key, details)
+            else:
+                self._emit("repair.full_completed", "Bottom-up candle repair completed", provider_key, details)
+                self._emit("backfill.full_completed", "Full-history download and candle repair completed", provider_key, details)
+
+    def status(self, provider_key: str | None = None) -> dict[str, object]:
+        with self._lock:
+            jobs = [job for job in self._jobs.values() if provider_key is None or job.provider_key == provider_key]
+            return {"jobs": [self._view(job) for job in sorted(jobs, key=lambda value: value.created_at, reverse=True)]}
+
+    def _emit(self, category: str, message: str, provider: str, details: dict[str, object]) -> None:
+        if self._on_event is not None:
+            self._on_event(category, message, provider, details)
+
+    @classmethod
+    def _merge_ranges(cls, values: list[PlannedRange]) -> list[PlannedRange]:
+        merged: list[PlannedRange] = []
+        for value in sorted(values, key=lambda item: (item.timeframe, item.start, item.end)):
+            if merged and merged[-1].timeframe == value.timeframe                     and value.start <= merged[-1].end + cls._step(value.timeframe):
+                previous = merged[-1]
+                merged[-1] = PlannedRange(
+                    previous.timeframe, previous.start, max(previous.end, value.end),
+                    max(previous.depth, value.depth),
+                )
+            else:
+                merged.append(value)
+        # Preserve authority order: minute, hour, day.
+        order = {"1m": 0, "1h": 1, "1d": 2}
+        return sorted(merged, key=lambda item: (order[item.timeframe], item.start))
+
+    @staticmethod
+    def _count_by_timeframe(values: list[PlannedRange]) -> dict[str, int]:
+        result: dict[str, int] = {}
+        for value in values:
+            result[value.timeframe] = result.get(value.timeframe, 0) + 1
+        return result
+
+    @staticmethod
+    def _totals(job: FullHistoryJob) -> dict[str, object]:
+        return {
+            "instruments": len(job.instruments),
+            "ranges_planned": sum(len(item.missing_ranges) for item in job.instruments),
+            "bad_ranges": sum(len(item.bad_ranges) for item in job.instruments),
+            "candles_received": sum(item.bars_received for item in job.instruments),
+            "candles_stored": sum(item.bars_inserted for item in job.instruments),
+            "candles_skipped": sum(max(0, item.bars_received - item.bars_inserted) for item in job.instruments),
+        }
 
     @staticmethod
     def _view(job: FullHistoryJob) -> dict[str, object]:
         return {
-            "job_id": job.job_id,
-            "provider_key": job.provider_key,
-            "status": job.status,
-            "created_at": job.created_at.isoformat(),
+            "job_id": job.job_id, "provider_key": job.provider_key, "status": job.status,
+            "phase": job.phase, "created_at": job.created_at.isoformat(),
             "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-            "instruments": [
-                {
-                    "provider_symbol": item.provider_symbol,
-                    "instrument": item.instrument,
-                    "status": item.status,
-                    "timeframe": item.timeframe,
-                    "tier_index": item.tier_index,
-                    "tier_start": item.tier_start.isoformat() if item.tier_start else None,
-                    "tier_end": item.tier_end.isoformat() if item.tier_end else None,
-                    "cursor_start": item.cursor_start.isoformat() if item.cursor_start else None,
-                    "current_end": item.current_end.isoformat() if item.current_end else None,
-                    "available_count": item.available_count,
-                    "local_count": item.local_count,
-                    "earliest_available": item.earliest_available.isoformat() if item.earliest_available else None,
-                    "latest_available": item.latest_available.isoformat() if item.latest_available else None,
-                    "batches_completed": item.batches_completed,
-                    "ranges_probed": item.ranges_probed,
-                    "ranges_skipped_existing": item.ranges_skipped_existing,
-                    "ranges_unavailable": item.ranges_unavailable,
-                    "bars_available": item.bars_available,
-                    "bars_received": item.bars_received,
-                    "bars_inserted": item.bars_inserted,
-                    "error": item.error,
-                    "retry_count": item.retry_count,
-                    "last_error_code": item.last_error_code,
-                    "request_kind": item.request_kind,
-                    "request_id": item.current_request_id,
-                    "dispatched_at": item.dispatched_at.isoformat() if item.dispatched_at else None,
-                    "dispatch_attempts": item.dispatch_attempts,
-                    "last_result": item.last_result,
-                    "scan_phase": item.scan_phase,
-                    "coarse_start": item.coarse_start.isoformat() if item.coarse_start else None,
-                    "coarse_end": item.coarse_end.isoformat() if item.coarse_end else None,
-                    "fine_end": item.fine_end.isoformat() if item.fine_end else None,
-                    "coarse_ranges_probed": item.coarse_ranges_probed,
-                    "fine_ranges_probed": item.fine_ranges_probed,
-                    "discovery_index": item.discovery_index,
-                    "discovery_complete": item.discovery_complete,
-                    "discovery_boundaries": {
-                        key: value.isoformat() if value else None
-                        for key, value in item.discovery_boundaries.items()
-                    },
-                    "discovery_counts": dict(item.discovery_counts),
-                    "discovery_local_counts": dict(item.discovery_local_counts),
-                    "discovery_complete_timeframes": sorted(item.discovery_complete_timeframes),
-                }
-                for item in job.instruments
-            ],
+            "repair_started_at": job.repair_started_at.isoformat() if job.repair_started_at else None,
+            "repair_completed_at": job.repair_completed_at.isoformat() if job.repair_completed_at else None,
+            "instruments": [{
+                "provider_symbol": item.provider_symbol, "instrument": item.instrument,
+                "status": item.status, "phase": item.phase, "timeframe": item.timeframe,
+                "tier_index": item.tier_index,
+                "tier_start": item.tier_start.isoformat() if item.tier_start else None,
+                "tier_end": item.tier_end.isoformat() if item.tier_end else None,
+                "cursor_start": item.cursor_start.isoformat() if item.cursor_start else None,
+                "current_end": item.current_end.isoformat() if item.current_end else None,
+                "available_count": item.available_count, "local_count": item.local_count,
+                "earliest_available": item.earliest_available.isoformat() if item.earliest_available else None,
+                "latest_available": item.latest_available.isoformat() if item.latest_available else None,
+                "batches_completed": item.batches_completed, "ranges_probed": item.ranges_probed,
+                "ranges_skipped_existing": item.ranges_skipped_existing,
+                "ranges_unavailable": item.ranges_unavailable, "bars_available": item.bars_available,
+                "bars_received": item.bars_received, "bars_inserted": item.bars_inserted,
+                "error": item.error, "retry_count": item.retry_count,
+                "last_error_code": item.last_error_code, "request_kind": item.request_kind,
+                "request_id": item.current_request_id,
+                "dispatched_at": item.dispatched_at.isoformat() if item.dispatched_at else None,
+                "dispatch_attempts": item.dispatch_attempts, "last_result": item.last_result,
+                "scan_phase": item.scan_phase, "coarse_start": None, "coarse_end": None,
+                "fine_end": None, "coarse_ranges_probed": item.coarse_ranges_probed,
+                "fine_ranges_probed": item.fine_ranges_probed,
+                "discovery_index": item.discovery_index, "discovery_complete": item.discovery_complete,
+                "discovery_boundaries": {key: value.isoformat() if value else None for key, value in item.discovery_boundaries.items()},
+                "discovery_counts": dict(item.discovery_counts),
+                "discovery_local_counts": dict(item.discovery_local_counts),
+                "discovery_complete_timeframes": sorted(item.discovery_complete_timeframes),
+                "planning_ranges_remaining": len(item.planning_queue),
+                "missing_ranges_planned": len(item.missing_ranges),
+                "download_index": item.download_index,
+                "bad_ranges": list(item.bad_ranges),
+            } for item in job.instruments],
         }

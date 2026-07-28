@@ -19,8 +19,23 @@ def test_backfill_command_dispatch_is_not_stranded_by_live_queue_pressure() -> N
     now=datetime(2026,7,27,tzinfo=UTC)
     manager=FullHistoryBackfillManager(lambda *_:0, pressure_probe=lambda:False, now_factory=lambda:now)
     manager.start('ICMarkets.MT5',[('EURUSD','EUR/USD')])
-    _complete_discovery(manager,'ICMarkets.MT5',now)
-    probe=manager.next_request('ICMarkets.MT5').split('|')
-    manager.availability_result('ICMarkets.MT5',probe[5],earliest=datetime.fromisoformat(probe[3]),latest=datetime.fromisoformat(probe[4]),count=1440)
-    assert manager.next_request('ICMarkets.MT5').startswith('BACKFILL|EURUSD|1m|')
+    request=manager.next_request('ICMarkets.MT5').split('|')
+    manager.availability_result(
+        'ICMarkets.MT5',request[5],earliest=now-timedelta(hours=1),latest=now,count=61,
+    )
+    for _ in ('1h','1d'):
+        request=manager.next_request('ICMarkets.MT5').split('|')
+        manager.availability_result('ICMarkets.MT5',request[5],earliest=None,latest=None,count=0)
+    for _ in range(20):
+        command=manager.next_request('ICMarkets.MT5')
+        if command.startswith('BACKFILL|'):
+            break
+        probe=command.split('|')
+        manager.availability_result(
+            'ICMarkets.MT5',probe[5],earliest=datetime.fromisoformat(probe[3]),
+            latest=datetime.fromisoformat(probe[4]),count=1440,
+        )
+    else:
+        raise AssertionError('planning did not reach backfill')
+    assert command.startswith('BACKFILL|EURUSD|1m|')
     assert manager.next_request('ICMarkets.MT5')==''

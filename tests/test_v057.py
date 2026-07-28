@@ -29,8 +29,8 @@ def test_tiered_history_probes_exact_range_before_downloading(tmp_path):
     decision = manager.availability_result(
         "ICMarkets.MT5", probe[5], earliest=datetime.fromisoformat(probe[3]), latest=datetime.fromisoformat(probe[4]), count=1440,
     )
-    assert decision == "BACKFILL|1440|0"
-    assert manager.next_request("ICMarkets.MT5").split("|")[:3] == ["BACKFILL", "EURUSD", "1m"]
+    assert decision.startswith("PLAN_SPLIT|1440|0|")
+    assert manager.next_request("ICMarkets.MT5").split("|")[:3] == ["AVAILABILITY", "EURUSD", "1m"]
 
 
 def test_matching_local_count_skips_download(tmp_path):
@@ -40,7 +40,7 @@ def test_matching_local_count_skips_download(tmp_path):
     _discover(manager, "P", now)
     probe = manager.next_request("P").split("|")
     decision = manager.availability_result("P", probe[5], earliest=datetime.fromisoformat(probe[3]), latest=datetime.fromisoformat(probe[4]), count=1440)
-    assert decision == "SKIP|1440|1440"
+    assert decision == "PLAN_COMPLETE|1440|1440"
     status = manager.status("P")["jobs"][0]["instruments"][0]
     assert status["ranges_skipped_existing"] == 1
 

@@ -48,6 +48,36 @@ CREATE TABLE IF NOT EXISTS candles (
 CREATE INDEX IF NOT EXISTS ix_candles_lookup
 ON candles(instrument, timeframe, open_time_utc);
 
+CREATE TABLE IF NOT EXISTS candle_provenance (
+    provider TEXT NOT NULL,
+    instrument TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    open_time_utc TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    source_timeframe TEXT NULL,
+    quality_rank INTEGER NOT NULL,
+    coverage_complete INTEGER NOT NULL,
+    repair_run_id TEXT NULL,
+    updated_utc TEXT NOT NULL,
+    PRIMARY KEY(provider, instrument, timeframe, open_time_utc)
+);
+CREATE INDEX IF NOT EXISTS ix_candle_provenance_lookup
+ON candle_provenance(provider, instrument, timeframe, open_time_utc);
+
+CREATE TABLE IF NOT EXISTS history_bad_ranges (
+    provider TEXT NOT NULL,
+    instrument TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    range_from_utc TEXT NOT NULL,
+    range_to_utc TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    error_code INTEGER NULL,
+    marked_utc TEXT NOT NULL,
+    PRIMARY KEY(provider, instrument, timeframe, range_from_utc, range_to_utc)
+);
+CREATE INDEX IF NOT EXISTS ix_history_bad_ranges_lookup
+ON history_bad_ranges(provider, instrument, timeframe, range_from_utc, range_to_utc);
+
 CREATE TABLE IF NOT EXISTS ingestion_state (
  provider TEXT NOT NULL, instrument TEXT NOT NULL, timeframe TEXT NOT NULL,
  requested_from_utc TEXT NOT NULL, requested_to_utc TEXT NOT NULL,
@@ -382,6 +412,36 @@ class MarketDataStore:
                 self._tick_publisher(tick)
         return written
 
+    def read_ticks_range(
+        self, provider: str, instrument: str, start: datetime, end: datetime,
+        *, limit: int = 1_000_000,
+    ) -> list[Tick]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT provider,instrument,timestamp_utc,bid,ask,volume
+                   FROM ticks
+                   WHERE provider=? AND instrument=? AND timestamp_utc>=? AND timestamp_utc<=?
+                   ORDER BY timestamp_utc ASC LIMIT ?""",
+                (provider, instrument, _iso(start), _iso(end), max(1, int(limit))),
+            ).fetchall()
+        return [Tick(
+            provider=str(row["provider"]), instrument=str(row["instrument"]),
+            timestamp=datetime.fromisoformat(str(row["timestamp_utc"])),
+            bid=Decimal(str(row["bid"])), ask=Decimal(str(row["ask"])),
+            volume=None if row["volume"] is None else Decimal(str(row["volume"])),
+        ) for row in rows]
+
+    def tick_bounds(self, provider: str, instrument: str) -> tuple[datetime | None, datetime | None]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT MIN(timestamp_utc),MAX(timestamp_utc) FROM ticks
+                   WHERE provider=? AND instrument=?""",
+                (provider, instrument),
+            ).fetchone()
+        if row is None or row[0] is None or row[1] is None:
+            return None, None
+        return datetime.fromisoformat(str(row[0])), datetime.fromisoformat(str(row[1]))
+
     def upsert_candle(self, candle: Candle) -> None:
         with self.connect() as connection:
             connection.execute(
@@ -455,6 +515,17 @@ class MarketDataStore:
                 (provider, instrument, timeframe, _iso(start), _iso(end)),
             ).fetchone()
         return int(row[0]) if row else 0
+
+    def candle_bounds(self, provider: str, instrument: str, timeframe: str) -> tuple[datetime | None, datetime | None]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT MIN(open_time_utc),MAX(open_time_utc) FROM candles
+                   WHERE provider=? AND instrument=? AND timeframe=?""",
+                (provider, instrument, timeframe),
+            ).fetchone()
+        if row is None or row[0] is None or row[1] is None:
+            return None, None
+        return datetime.fromisoformat(str(row[0])), datetime.fromisoformat(str(row[1]))
 
     def candle_bounds_range(self, provider: str, instrument: str, timeframe: str, start: datetime, end: datetime) -> tuple[datetime | None, datetime | None]:
         with self.connect() as connection:
@@ -537,6 +608,82 @@ class MarketDataStore:
                 (provider, instrument, timeframe, _iso(open_time)),
             ).fetchone()
         return row is not None
+
+    def mark_history_bad_range(
+        self, provider: str, instrument: str, timeframe: str,
+        start: datetime, end: datetime, reason: str, error_code: int | None = None,
+    ) -> None:
+        from .clock import server_now
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO history_bad_ranges(
+                    provider,instrument,timeframe,range_from_utc,range_to_utc,
+                    reason,error_code,marked_utc
+                ) VALUES (?,?,?,?,?,?,?,?)
+                ON CONFLICT(provider,instrument,timeframe,range_from_utc,range_to_utc)
+                DO UPDATE SET reason=excluded.reason,error_code=excluded.error_code,
+                              marked_utc=excluded.marked_utc""",
+                (provider, instrument, timeframe, _iso(start), _iso(end), reason,
+                 error_code, _iso(server_now())),
+            )
+
+    def is_history_bad_range(
+        self, provider: str, instrument: str, timeframe: str,
+        start: datetime, end: datetime,
+    ) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT 1 FROM history_bad_ranges
+                   WHERE provider=? AND instrument=? AND timeframe=?
+                     AND range_from_utc=? AND range_to_utc=? LIMIT 1""",
+                (provider, instrument, timeframe, _iso(start), _iso(end)),
+            ).fetchone()
+        return row is not None
+
+    def list_history_bad_ranges(self, provider: str | None = None, limit: int = 1000) -> list[dict[str, object]]:
+        where = "WHERE provider=?" if provider else ""
+        args: list[object] = [provider] if provider else []
+        args.append(max(1, min(10000, int(limit))))
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM history_bad_ranges {where} ORDER BY marked_utc DESC LIMIT ?", args
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_candle_provenance(
+        self, provider: str, instrument: str, timeframe: str, open_time: datetime,
+    ) -> dict[str, object] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM candle_provenance
+                   WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc=?""",
+                (provider, instrument, timeframe, _iso(open_time)),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def set_candle_provenance(
+        self, provider: str, instrument: str, timeframe: str, open_time: datetime,
+        *, source_kind: str, source_timeframe: str | None, quality_rank: int,
+        coverage_complete: bool, repair_run_id: str | None,
+    ) -> None:
+        from .clock import server_now
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO candle_provenance(
+                    provider,instrument,timeframe,open_time_utc,source_kind,
+                    source_timeframe,quality_rank,coverage_complete,repair_run_id,updated_utc
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(provider,instrument,timeframe,open_time_utc)
+                DO UPDATE SET source_kind=excluded.source_kind,
+                              source_timeframe=excluded.source_timeframe,
+                              quality_rank=excluded.quality_rank,
+                              coverage_complete=excluded.coverage_complete,
+                              repair_run_id=excluded.repair_run_id,
+                              updated_utc=excluded.updated_utc""",
+                (provider, instrument, timeframe, _iso(open_time), source_kind,
+                 source_timeframe, int(quality_rank), int(coverage_complete),
+                 repair_run_id, _iso(server_now())),
+            )
 
     def record_repair_run(self, result: object) -> None:
         with self.connect() as connection:

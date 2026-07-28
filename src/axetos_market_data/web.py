@@ -40,6 +40,7 @@ from .benchmark_jobs import BenchmarkJobManager
 from .bridge import (Mt5BridgeService, BridgeHeartbeatRequest, BridgeInstrumentsRequest, BridgeTicksRequest, BridgeQuotesRequest, BridgeCandlesRequest, InstrumentSelectionRequest)
 from .full_history import FullHistoryBackfillManager
 from .history_worker import HistoryIngestionProcess
+from .hierarchical_repair import HierarchicalCandleRepair
 
 
 class BackfillRequest(BaseModel):
@@ -188,16 +189,37 @@ def create_app(
     scheduler = MaintenanceScheduler(store)
     backups = BackupService(database_path, configuration_path)
     benchmark_jobs = BenchmarkJobManager()
-    def rebuild_full_history_derived(provider: str, instrument: str) -> None:
-        from .aggregation import CANONICAL_DERIVED_TIMEFRAMES, CandleAggregator
+    def record_full_history_event(
+        category: str, message: str, provider: str, details: dict[str, object]
+    ) -> None:
+        events.record("info", category, message, provider=provider, details=details)
+
+    def repair_full_history(provider: str, job_id: str, instruments: list[str]) -> None:
         def run() -> None:
-            aggregator = CandleAggregator(store)
-            # Preserve directly imported H1/D1 source history. Only fill derived
-            # timeframes from the finest source that actually exists; never delete
-            # coarse provider history during a background import.
-            for timeframe in CANONICAL_DERIVED_TIMEFRAMES:
-                aggregator.aggregate(instrument, timeframe, provider, replace=False)
-        threading.Thread(target=run, name=f"history-aggregate-{provider}-{instrument}", daemon=True).start()
+            repair = HierarchicalCandleRepair(store)
+
+            def stage_event(category: str, instrument: str, timeframe: str, details: dict[str, object]) -> None:
+                events.record(
+                    "warning" if int(details.get("errors", 0)) else "info",
+                    category,
+                    "Candle repair stage started" if category.endswith("started") else "Candle repair stage completed",
+                    provider=provider,
+                    instrument=instrument,
+                    details={"target_timeframe": timeframe, **details},
+                )
+
+            try:
+                summary = repair.run(provider, instruments, on_stage=stage_event)
+            except Exception as exc:  # keep the coordinator moving and expose the failure
+                full_history.complete_repair(provider, job_id, {}, error=str(exc))
+                return
+            full_history.complete_repair(provider, job_id, summary)
+
+        threading.Thread(
+            target=run,
+            name=f"history-repair-{provider}-{job_id[:8]}",
+            daemon=True,
+        ).start()
 
     full_history = FullHistoryBackfillManager(
         lambda provider, instrument, timeframe, start, end: store.candle_count_range(
@@ -206,7 +228,10 @@ def create_app(
         lambda provider, instrument, timeframe, start, end: store.candle_bounds_range(
             provider, instrument, timeframe, start, end
         ),
-        on_instrument_completed=rebuild_full_history_derived,
+        on_download_completed=repair_full_history,
+        on_event=record_full_history_event,
+        bad_range_recorder=store.mark_history_bad_range,
+        bad_range_probe=store.is_history_bad_range,
     )
     started_utc = datetime.now(UTC)
 
@@ -534,6 +559,14 @@ def create_app(
     @app.get("/api/full-history")
     def full_history_status(provider_key: str | None = None) -> dict[str, object]:
         return full_history.status(provider_key)
+
+    @app.get("/api/full-history/bad-ranges")
+    def full_history_bad_ranges(
+        provider_key: str | None = None,
+        limit: int = Query(default=1000, ge=1, le=10000),
+    ) -> dict[str, object]:
+        values = store.list_history_bad_ranges(provider_key, limit)
+        return {"count": len(values), "ranges": values}
 
     @app.post("/api/market-data/mt5/instrument-selection")
     def instrument_selection(request: InstrumentSelectionRequest) -> dict[str, object]:

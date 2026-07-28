@@ -31,9 +31,9 @@ class FakeMT5:
 
 
 def test_version_and_readme():
-    assert __version__ == "0.60.13"
+    assert __version__ == "0.61.0"
     readme = open("README.md", encoding="utf-8").read()
-    assert "## Version 0.60.13" in readme
+    assert "## Version 0.61.0" in readme
     assert "conditional account authentication" in readme
 
 

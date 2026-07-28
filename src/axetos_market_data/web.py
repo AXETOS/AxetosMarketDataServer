@@ -518,9 +518,16 @@ def create_app(
             or str(context.get("phase")) == "recent_m1_download"
         ) and str(context.get("timeframe")) == "1m"
         replace_flatline = False
+        replace_window = None
+        if replace_all and request.chunk_index == 0 and context is not None:
+            window_start = context.get("from_utc")
+            window_end = context.get("to_utc")
+            if isinstance(window_start, datetime) and isinstance(window_end, datetime):
+                replace_window = (window_start, window_end)
         try:
             stored = bridge.candles(
-                request, replace_flatline=replace_flatline, replace_all=replace_all
+                request, replace_flatline=replace_flatline, replace_all=replace_all,
+                replace_window=replace_window,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc

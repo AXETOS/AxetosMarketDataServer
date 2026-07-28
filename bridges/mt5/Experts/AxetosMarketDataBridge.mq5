@@ -47,7 +47,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.27: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.28: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -557,9 +557,10 @@ bool SendCandlesForDateRange(string symbol, ENUM_TIMEFRAMES timeframe, string in
       }
 
       string json = StringFormat(
-         "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"%s\",\"requestId\":\"%s\",\"candles\":[%s]}",
+         "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"%s\",\"requestId\":\"%s\",\"chunkIndex\":%d,\"chunkCount\":%d,\"candles\":[%s]}",
          JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), JsonEscape(symbol),
-         JsonEscape(CanonicalSymbol(symbol)), interval, JsonEscape(request_id), items);
+         JsonEscape(CanonicalSymbol(symbol)), interval, JsonEscape(request_id),
+         chunk_index, chunk_count, items);
       string storage_response = "";
       PrintFormat("Axetos MT5 Bridge: uploading backfill chunk %d/%d for %s %s; bars=%d; request=%s.",
                   chunk_index + 1, chunk_count, symbol, interval, chunk_end - chunk_start, request_id);

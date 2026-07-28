@@ -96,6 +96,8 @@ class BridgeCandlesRequest(BaseModel):
     interval: str = Field(validation_alias=AliasChoices("Interval", "interval"), serialization_alias="Interval")
     candles: list[BridgeCandle] = Field(default_factory=list, validation_alias=AliasChoices("Candles", "candles"), serialization_alias="Candles")
     request_id: str | None = Field(default=None, validation_alias=AliasChoices("RequestId", "requestId"), serialization_alias="RequestId")
+    chunk_index: int = Field(default=0, validation_alias=AliasChoices("ChunkIndex", "chunkIndex"), serialization_alias="ChunkIndex")
+    chunk_count: int = Field(default=1, validation_alias=AliasChoices("ChunkCount", "chunkCount"), serialization_alias="ChunkCount")
     model_config = {"populate_by_name": True}
 
 
@@ -237,19 +239,23 @@ class Mt5BridgeService:
 
     def _insert_historical_low_priority(
         self, candles: list[Candle], *, replace_flatline: bool = False, replace_all: bool = False,
+        replace_window: tuple[datetime, datetime] | None = None,
     ) -> int:
         """Submit targeted BACKFILL storage outside the live queue process."""
         if self._history_process is None:
             # Compatibility fallback for direct service construction in unit tests.
             return (
-                self.store.replace_candles(candles)
+                self.store.replace_candle_window(candles, *replace_window)
+                if replace_window is not None
+                else self.store.force_replace_candles(candles)
                 if replace_all
                 else self.store.insert_missing_or_replace_flatline(candles)
                 if replace_flatline
                 else self.store.insert_candles_missing(candles)
             )
         return self._history_process.insert_missing(
-            candles, replace_flatline=replace_flatline, replace_all=replace_all
+            candles, replace_flatline=replace_flatline, replace_all=replace_all,
+            replace_window=replace_window,
         )
 
     def quotes(self, request: BridgeQuotesRequest) -> int:
@@ -312,6 +318,7 @@ class Mt5BridgeService:
 
     def candles(
         self, request: BridgeCandlesRequest, *, replace_flatline: bool = False, replace_all: bool = False,
+        replace_window: tuple[datetime, datetime] | None = None,
     ) -> int:
         """Import provider-confirmed historical bars without overwriting existing rows.
 
@@ -345,7 +352,8 @@ class Mt5BridgeService:
         )
         written = (
             self._insert_historical_low_priority(
-                values, replace_flatline=replace_flatline, replace_all=replace_all
+                values, replace_flatline=replace_flatline, replace_all=replace_all,
+                replace_window=replace_window,
             )
             if request.request_id else self.store.upsert_candles(values)
         )

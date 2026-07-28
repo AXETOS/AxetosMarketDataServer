@@ -540,6 +540,70 @@ class MarketDataStore:
                 changed += 1
         return changed
 
+    def force_replace_candles(self, candles: Iterable[Candle]) -> int:
+        """Authoritatively upsert every supplied candle and count every accepted row."""
+        values = list(candles)
+        if not values:
+            return 0
+        with self.connect() as connection:
+            for candle in values:
+                key = (candle.provider, candle.instrument, candle.timeframe, _iso(candle.open_time))
+                connection.execute(
+                    """INSERT INTO candles(provider,instrument,timeframe,open_time_utc,open,high,low,close,tick_count,volume,complete)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(provider,instrument,timeframe,open_time_utc) DO UPDATE SET
+                         open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,
+                         tick_count=excluded.tick_count,volume=excluded.volume,complete=excluded.complete""",
+                    (*key, str(candle.open), str(candle.high), str(candle.low), str(candle.close),
+                     candle.tick_count, None if candle.volume is None else str(candle.volume), int(candle.complete)),
+                )
+        return len(values)
+
+    def replace_candle_window(
+        self, candles: Iterable[Candle], start: datetime, end: datetime,
+    ) -> int:
+        """Atomically clear one provider window and replace it with MT5 candles.
+
+        This is used only by the first chunk of the authoritative recent-M1 refresh.
+        Provisional and malformed rows with non-provider-aligned timestamps are removed
+        before the official MT5 series is inserted.
+        """
+        values = list(candles)
+        if not values:
+            return 0
+        provider = values[0].provider
+        instrument = values[0].instrument
+        timeframe = values[0].timeframe
+        if any(
+            item.provider != provider or item.instrument != instrument or item.timeframe != timeframe
+            for item in values
+        ):
+            raise ValueError("Authoritative replacement window must contain one provider/instrument/timeframe")
+        with self.connect() as connection:
+            params = (provider, instrument, timeframe, _iso(start), _iso(end))
+            connection.execute(
+                """DELETE FROM candle_provenance
+                   WHERE provider=? AND instrument=? AND timeframe=?
+                     AND open_time_utc>=? AND open_time_utc<=?""",
+                params,
+            )
+            connection.execute(
+                """DELETE FROM candles
+                   WHERE provider=? AND instrument=? AND timeframe=?
+                     AND open_time_utc>=? AND open_time_utc<=?""",
+                params,
+            )
+            for candle in values:
+                connection.execute(
+                    """INSERT INTO candles(provider,instrument,timeframe,open_time_utc,open,high,low,close,tick_count,volume,complete)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (candle.provider, candle.instrument, candle.timeframe, _iso(candle.open_time),
+                     str(candle.open), str(candle.high), str(candle.low), str(candle.close),
+                     candle.tick_count, None if candle.volume is None else str(candle.volume),
+                     int(candle.complete)),
+                )
+        return len(values)
+
     def insert_missing_or_replace_flatline(self, candles: Iterable[Candle]) -> int:
         """Insert missing rows and replace only flatline rows with better provider data.
 

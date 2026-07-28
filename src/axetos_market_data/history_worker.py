@@ -74,13 +74,18 @@ def _history_worker_main(
             candles = [_deserialize_candle(item) for item in command["candles"]]
             mode = str(command.get("mode", "missing_only"))
             stored = (
-                store.replace_candles(candles)
+                store.replace_candle_window(
+                    candles, datetime.fromisoformat(str(command["window_start"])),
+                    datetime.fromisoformat(str(command["window_end"])),
+                )
+                if mode == "replace_window"
+                else store.force_replace_candles(candles)
                 if mode == "replace_all"
                 else store.insert_missing_or_replace_flatline(candles)
                 if mode == "replace_flatline"
                 else store.insert_candles_missing(candles)
             )
-            if mode == "replace_all":
+            if mode in {"replace_all", "replace_window"}:
                 for candle in candles:
                     store.set_candle_provenance(
                         candle.provider, candle.instrument, candle.timeframe, candle.open_time,
@@ -167,6 +172,7 @@ class HistoryIngestionProcess:
     def insert_missing(
         self, candles: list[Candle], *, timeout_seconds: float = 30.0,
         replace_flatline: bool = False, replace_all: bool = False,
+        replace_window: tuple[datetime, datetime] | None = None,
     ) -> int:
         if not candles:
             return 0
@@ -179,8 +185,11 @@ class HistoryIngestionProcess:
         command = {
             "job_id": job_id,
             "candles": [_serialize_candle(item) for item in candles],
-            "mode": "replace_all" if replace_all else "replace_flatline" if replace_flatline else "missing_only",
+            "mode": "replace_window" if replace_window is not None else "replace_all" if replace_all else "replace_flatline" if replace_flatline else "missing_only",
         }
+        if replace_window is not None:
+            command["window_start"] = replace_window[0].isoformat()
+            command["window_end"] = replace_window[1].isoformat()
         try:
             self._commands.put(command, timeout=2.0)
             self.stats.queued_jobs += 1

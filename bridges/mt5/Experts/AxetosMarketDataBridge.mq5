@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.29"
+#property version   "1.30"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -48,7 +48,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.29: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.30: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -437,7 +437,9 @@ void SendPreviousCompletedM1()
 {
    datetime now = TimeCurrent();
    int delay = MathMax(1, MathMin(15, InpCompletedM1DelaySeconds));
-   if(TimeSeconds(now) < delay)
+   MqlDateTime now_parts;
+   TimeToStruct(now, now_parts);
+   if(now_parts.sec < delay)
       return;
 
    datetime current_minute = (datetime)((long)now - ((long)now % 60));

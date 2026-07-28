@@ -35,7 +35,7 @@ def test_transient_download_failure_is_bounded():
 
 def test_bridge_probes_exact_symbol_timeframe_range():
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "1.29"' in source
+    assert '#property version   "1.30"' in source
     assert "ProbeHistoryRange" in source
     assert "candleCount=" in source
     assert "latestUtc=" in source

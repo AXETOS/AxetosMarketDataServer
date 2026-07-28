@@ -1,3 +1,9 @@
+## Version 0.61.9
+
+### MT5 bridge compile fix
+
+Bridge v1.30 replaces the invalid `TimeSeconds(now)` expression in completed-minute polling with the supported MQL5 `TimeToStruct` API and `MqlDateTime.sec`. This fixes the compiler errors reported at line 440 while preserving the previous-minute polling delay.
+
 ## Version 0.61.8
 
 ### Official completed-minute polling

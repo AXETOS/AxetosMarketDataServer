@@ -11,9 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_release_metadata() -> None:
-    assert __version__ == "0.61.8"
-    assert 'version = "0.61.8"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.61.8" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.61.9"
+    assert 'version = "0.61.9"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.61.9" in (ROOT / "README.md").read_text(encoding="utf-8")
 
 
 def test_service_persists_server_owned_partial_candles_for_all_timeframes(tmp_path) -> None:

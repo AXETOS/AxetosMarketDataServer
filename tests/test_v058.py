@@ -8,4 +8,4 @@ def test_unavailable_download_advances():
     assert m.next_request('P').startswith('BACKFILL|')
 
 def test_bridge_direct_backfill_support():
-    source=Path('bridges/mt5/Experts/AxetosMarketDataBridge.mq5').read_text(); assert 'command != "BACKFILL"' in source and 'CopyRates returned' in source
+    source=Path('bridges/mt5/Experts/AxetosMarketDataBridge.mq5').read_text(); assert 'action != "FETCH" && action != "BACKFILL"' in source and 'CopyRates' in source

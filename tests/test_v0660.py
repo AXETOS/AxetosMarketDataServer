@@ -18,10 +18,10 @@ def test_server_schedules_previous_two_completed_minutes() -> None:
 
 def test_bridge_is_thin_server_command_executor() -> None:
     bridge = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "2.00"' in bridge
-    assert "ExecuteServerCommand" in bridge
+    assert '#property version   "3.00"' in bridge
+    assert "PollCommand" in bridge
+    assert "ExecuteCommand" in bridge
+    assert "CopyRates" in bridge
     assert "SendPreviousCompletedM1" not in bridge
-    assert "g_last_m1_bar" not in bridge
     assert "InpCompletedM1DelaySeconds" not in bridge
-    assert "command != \"BACKFILL\" && command != \"FETCH\"" in bridge
-    assert len(bridge.splitlines()) < 900
+    assert len(bridge.splitlines()) <= 450

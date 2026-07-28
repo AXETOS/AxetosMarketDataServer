@@ -38,13 +38,10 @@ def test_authoritative_completed_m1_force_replaces_exact_timestamp(tmp_path: Pat
 
 def test_bridge_source_polls_previous_completed_m1_and_marks_authoritative() -> None:
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert "SendPreviousCompletedM1();" in source
-    assert "authoritative" in source and "true" in source
-    assert "CopyRates(symbol, PERIOD_M1, newest_completed - 60, newest_completed + 59" in source
-    assert "Live observations are feed-health/current-price evidence only" in Path(
-        "src/axetos_market_data/bridge.py"
-    ).read_text(encoding="utf-8")
-
+    assert "SendPreviousCompletedM1" not in source
+    assert "PollCommand" in source
+    assert "CopyRates" in source
+    assert "requestId" in source
 
 def test_recent_repair_source_schedules_run_window_catchup() -> None:
     source = Path("src/axetos_market_data/web.py").read_text(encoding="utf-8")
@@ -52,3 +49,4 @@ def test_recent_repair_source_schedules_run_window_catchup() -> None:
     assert "repair.recent_m1_catchup_completed" in source
     assert "recent_refresh_started_at" in source
     assert "catchup_from_utc" in source
+

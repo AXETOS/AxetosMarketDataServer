@@ -2,6 +2,14 @@
 
 A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
 
+## Version 0.67.0
+
+### Passive MT5 question-and-answer bridge
+
+The MT5 Expert Advisor has been rebuilt as a passive adapter. It reports heartbeat/current quotes, asks the server for one command, executes the exact `CopyRates` symbol/timeframe/range supplied by the server, uploads the answer, and reports success or failure. It contains no autonomous minute scheduler, history planner, repair workflow, retry policy, flatline logic, candle conversion, or database-comparison logic.
+
+The bridge is now 402 lines with 22 functions, down from 832 lines and 38 functions in v0.66.0. All decisions remain server-side.
+
 ## Version 0.66.0
 
 ### Thin server-controlled MT5 bridge rewrite

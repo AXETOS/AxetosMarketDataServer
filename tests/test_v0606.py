@@ -3,15 +3,12 @@ from pathlib import Path
 
 def test_targeted_backfill_upload_is_chunked_and_acknowledged_before_completion() -> None:
     bridge = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-
-    assert '#property version   "2.00"' in bridge
-    assert "const int upload_chunk_size = 100;" in bridge
-    assert "uploading backfill chunk %d/%d" in bridge
-    assert "backfill chunk %d/%d was not acknowledged" in bridge
-    assert "chunk_stored + chunk_skipped != chunk_end - chunk_start" in bridge
-    assert "stored_out += chunk_stored;" in bridge
-    assert "skipped_out += chunk_skipped;" in bridge
-
+    assert '#property version   "3.00"' in bridge
+    assert "InpUploadChunkSize" in bridge
+    assert "chunk_count = (copied + chunk_size - 1) / chunk_size" in bridge
+    assert "stored + skipped != last - first" in bridge
+    assert "stored_out += stored;" in bridge
+    assert "skipped_out += skipped;" in bridge
 
 def test_1435_bar_range_is_split_into_fifteen_bounded_posts() -> None:
     copied = 1435
@@ -22,3 +19,4 @@ def test_1435_bar_range_is_split_into_fifteen_bounded_posts() -> None:
     assert [end - start for start, end in chunks[:-1]] == [100] * 14
     assert chunks[-1][1] - chunks[-1][0] == 35
     assert sum(end - start for start, end in chunks) == 1435
+

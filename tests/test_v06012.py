@@ -41,8 +41,7 @@ def test_full_live_queue_discards_oldest_snapshot_and_accepts_newest() -> None:
 
 def test_bridge_v127_treats_tick_backpressure_separately() -> None:
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "2.00"' in source
-    assert 'IsTickBackpressure' in source
-    assert 'live ingestion congested; pausing tick submissions for 5s' in source
-    assert 'live ingestion resumed' in source
-    assert 'g_tick_suppressed_batches++' in source
+    assert '#property version   "3.00"' in source
+    assert "IsTickBackpressure" not in source
+    assert "retry_after" not in source
+    assert "SendTicks" in source

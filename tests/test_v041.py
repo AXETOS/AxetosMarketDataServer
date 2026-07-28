@@ -8,9 +8,9 @@ BRIDGE = ROOT / "bridges" / "mt5" / "Experts" / "AxetosMarketDataBridge.mq5"
 
 
 def test_release_metadata_is_v041() -> None:
-    assert __version__ == "0.66.0"
-    assert 'version = "0.66.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.66.0" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.67.0"
+    assert 'version = "0.67.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.67.0" in (ROOT / "README.md").read_text(encoding="utf-8")
 
 
 def test_access_logging_is_disabled_by_default(monkeypatch) -> None:
@@ -26,16 +26,14 @@ def test_access_logging_can_be_enabled_by_cli() -> None:
 
 def test_bridge_captures_webrequest_error_before_response_decode() -> None:
     source = BRIDGE.read_text(encoding="utf-8")
-    assert '#property version   "2.00"' in source
-    assert source.index("int request_error = GetLastError();") < source.index("CharArrayToString(result")
-    assert 'WebRequest("GET", url, NULL, NULL, HttpTimeoutForPath(path), data, 0' in source
-
+    assert '#property version   "3.00"' in source
+    assert source.index("int error_code = GetLastError();") < source.index("CharArrayToString(result")
+    assert 'WebRequest("GET"' in source
 
 def test_bridge_has_independent_channels_and_transport_self_test() -> None:
     source = BRIDGE.read_text(encoding="utf-8")
-    assert "int HttpChannelForPath(" in source
-    assert "int HttpTimeoutForPath(" in source
-    assert "void RecordHttpFailure(" in source
+    assert "HttpGet" in source
+    assert "HttpPost" in source
     assert "g_http_retry_after" not in source
-    assert 'GetText("/api/live", transport_response)' in source
-    assert "other channels continue" in source
+    assert "PollCommand" in source
+    assert "SendTicks" in source

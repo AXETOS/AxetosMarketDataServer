@@ -48,6 +48,7 @@ def test_enabled_bridge_symbols_ignores_bridge_market_watch_selection(tmp_path: 
 
 def test_bridge_applies_empty_server_selection_as_stop() -> None:
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert 'server selection is empty; streaming stopped' in source
-    assert 'retaining the current stream' not in source
-    assert '#property version   "2.00"' in source
+    assert "RefreshTickSymbols" in source
+    assert 'int count = response == "" ? 0' in source
+    assert "ArrayResize(g_tick_symbols, accepted);" in source
+    assert '#property version   "3.00"' in source

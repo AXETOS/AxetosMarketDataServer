@@ -9,5 +9,7 @@ def test_direct_download_acknowledgement() -> None:
 
 def test_bridge_and_server_expose_explicit_storage_handshake() -> None:
     bridge=Path('bridges/mt5/Experts/AxetosMarketDataBridge.mq5').read_text(); manager=Path('src/axetos_market_data/full_history.py').read_text()
-    assert 'CopyRates returned' in bridge and 'server acknowledged' in bridge
-    assert 'return f"STORED|{received}|{inserted}|{skipped}"' in manager
+    assert 'CopyRates' in bridge and 'UploadCandles' in bridge
+    assert 'JsonInt(response, "stored", -1)' in bridge
+    assert 'ReportResult' in bridge
+    assert 'batch_result' in manager

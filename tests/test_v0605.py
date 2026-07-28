@@ -53,7 +53,7 @@ def test_bridge_and_server_expose_explicit_storage_handshake() -> None:
     web = Path("src/axetos_market_data/web.py").read_text(encoding="utf-8")
     manager = Path("src/axetos_market_data/full_history.py").read_text(encoding="utf-8")
 
-    assert '#property version   "1.31"' in bridge
+    assert '#property version   "1.32"' in bridge
     assert "download started" in bridge
     assert "CopyRates returned" in bridge
     assert "server stored %d and skipped %d" in bridge

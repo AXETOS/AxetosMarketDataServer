@@ -4,6 +4,16 @@ A standalone Python market-data server for collecting official MT5 candles, main
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders.
 
+## Version 0.63.0
+
+### Simplified independent MT5 channels
+
+Bridge v1.32 removes the shared HTTP retry gate. Heartbeat, repair/history control, current quotes, completed-M1 candles, and catalogue/selection requests now keep independent failure counters and logging. A timeout in one channel never suppresses or delays another channel beyond the duration of that single synchronous request.
+
+Control and heartbeat requests use short bounded timeouts, live quote and catalogue requests use their own bounded timeout, and bulk candle uploads retain the longer history timeout. Repair commands still take priority when present, but an absent or failed repair poll no longer prevents heartbeat, quotes, selection refresh, or completed-minute polling from running on their normal schedules.
+
+The bridge runtime is intentionally limited to four responsibilities: heartbeat/feed state, current quotes, official previous-minute M1 polling, and explicit server-issued history/repair commands. Higher-timeframe aggregation remains in the dedicated repair process and history persistence remains in the dedicated history process.
+
 ## Version 0.62.2
 
 ### Stable MT5 control-plane polling

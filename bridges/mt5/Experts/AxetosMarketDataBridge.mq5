@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.31"
+#property version   "1.32"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -13,16 +13,24 @@ input int    InpHeartbeatSeconds   = 1;
 input int    InpCompletedM1DelaySeconds = 3;
 input int    InpSelectionRefreshSeconds = 15;
 input bool   InpSendHistoricalBars = false; // Full history is server-controlled.
-input int    InpHttpMaxBackoffSeconds = 30;
+input int    InpControlTimeoutMs = 1000;
+input int    InpLiveTimeoutMs    = 1500;
 
 string g_symbols[];
 datetime g_last_m1_bar[];
 datetime g_last_heartbeat = 0;
 datetime g_last_selection_refresh = 0;
 string g_terminal_id = "";
-int g_http_consecutive_failures = 0;
-datetime g_http_retry_after = 0;
-int g_http_suppressed_requests = 0;
+enum AXETOS_HTTP_CHANNEL
+{
+   HTTP_CONTROL = 0,
+   HTTP_HEARTBEAT = 1,
+   HTTP_QUOTES = 2,
+   HTTP_CANDLES = 3,
+   HTTP_CATALOG = 4
+};
+int g_http_channel_failures[5];
+datetime g_http_channel_last_log[5];
 datetime g_tick_retry_after = 0;
 bool g_tick_congested = false;
 int g_tick_suppressed_batches = 0;
@@ -48,7 +56,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.31: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.32: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -984,53 +992,73 @@ string JoinedSymbols(string &symbols[])
    return value;
 }
 
-bool HttpAttemptAllowed(string path)
+int HttpChannelForPath(string path)
 {
-   // Heartbeat and repair coordination are control-plane requests. They must remain
-   // eligible even when a bulk candle upload has entered transport backoff.
-   if(path == "/api/market-data/ingest/mt5/heartbeat" ||
-      StringFind(path, "/api/market-data/mt5/repair-request.txt") == 0)
-      return true;
-   if(g_http_retry_after > 0 && TimeLocal() < g_http_retry_after)
-   {
-      g_http_suppressed_requests++;
-      return false;
-   }
-   return true;
+   if(path == "/api/market-data/ingest/mt5/heartbeat")
+      return HTTP_HEARTBEAT;
+   if(StringFind(path, "/api/market-data/mt5/repair-request.txt") == 0 ||
+      StringFind(path, "/api/market-data/mt5/history-") == 0)
+      return HTTP_CONTROL;
+   if(path == "/api/market-data/ingest/mt5/ticks")
+      return HTTP_QUOTES;
+   if(path == "/api/market-data/ingest/mt5/candles")
+      return HTTP_CANDLES;
+   return HTTP_CATALOG;
 }
 
-void RecordHttpSuccess()
+string HttpChannelName(int channel)
 {
-   if(g_http_consecutive_failures > 0)
-      PrintFormat("Axetos MT5 Bridge: server communication restored after %d failed attempt(s); %d request(s) suppressed.",
-                  g_http_consecutive_failures, g_http_suppressed_requests);
-   g_http_consecutive_failures = 0;
-   g_http_retry_after = 0;
-   g_http_suppressed_requests = 0;
+   if(channel == HTTP_CONTROL) return "control";
+   if(channel == HTTP_HEARTBEAT) return "heartbeat";
+   if(channel == HTTP_QUOTES) return "quotes";
+   if(channel == HTTP_CANDLES) return "candles";
+   return "catalog";
+}
+
+int HttpTimeoutForPath(string path)
+{
+   int channel = HttpChannelForPath(path);
+   if(channel == HTTP_CONTROL || channel == HTTP_HEARTBEAT)
+      return MathMax(250, InpControlTimeoutMs);
+   if(channel == HTTP_QUOTES || channel == HTTP_CATALOG)
+      return MathMax(500, InpLiveTimeoutMs);
+   return MathMax(1000, InpRequestTimeoutMs);
+}
+
+void RecordHttpSuccess(string path)
+{
+   int channel = HttpChannelForPath(path);
+   if(g_http_channel_failures[channel] > 0)
+      PrintFormat("Axetos MT5 Bridge: %s channel restored after %d failed attempt(s).",
+                  HttpChannelName(channel), g_http_channel_failures[channel]);
+   g_http_channel_failures[channel] = 0;
+   g_http_channel_last_log[channel] = 0;
 }
 
 void RecordHttpApplicationFailure(string method, string path, int status, int error_code, string response)
 {
-   // Any HTTP response proves that the server is reachable. Client/configuration
-   // errors must not suppress heartbeat, tick, candle, or other endpoint calls.
-   RecordHttpSuccess();
+   // An HTTP response proves transport availability. Rejecting one channel must not
+   // alter scheduling or suppress any other bridge responsibility.
+   RecordHttpSuccess(path);
    PrintFormat("Axetos MT5 Bridge: %s %s rejected. HTTP=%d error=%d response=%s; continuing other requests.",
                method, path, status, error_code, response);
 }
 
 void RecordHttpFailure(string method, string path, int status, int error_code, string response)
 {
-   g_http_consecutive_failures++;
-   int exponent = MathMin(g_http_consecutive_failures - 1, 5);
-   int delay_seconds = 1;
-   for(int i = 0; i < exponent; i++)
-      delay_seconds *= 2;
-   delay_seconds = MathMin(delay_seconds, MathMax(1, InpHttpMaxBackoffSeconds));
-   g_http_retry_after = TimeLocal() + delay_seconds;
+   int channel = HttpChannelForPath(path);
+   g_http_channel_failures[channel]++;
 
-   PrintFormat("Axetos MT5 Bridge: %s %s failed. HTTP=%d error=%d response=%s; retry in %ds (%d request(s) suppressed).",
-               method, path, status, error_code, response, delay_seconds, g_http_suppressed_requests);
-   g_http_suppressed_requests = 0;
+   // Failures are channel-local and never create a shared retry gate. Throttle only
+   // the Journal message; heartbeat, quotes, completed M1, catalogue and repair
+   // polling continue on their own schedules.
+   datetime now = TimeLocal();
+   if(g_http_channel_last_log[channel] == 0 || now - g_http_channel_last_log[channel] >= 30)
+   {
+      PrintFormat("Axetos MT5 Bridge: %s channel request failed: %s %s HTTP=%d error=%d response=%s; other channels continue.",
+                  HttpChannelName(channel), method, path, status, error_code, response);
+      g_http_channel_last_log[channel] = now;
+   }
 }
 
 bool IsTickBackpressure(string path, int status, string response)
@@ -1062,9 +1090,6 @@ void RecordTickSuccess()
 bool GetText(string path, string &response)
 {
    response = "";
-   if(!HttpAttemptAllowed(path))
-      return false;
-
    string url = InpServerUrl + path;
    string headers = "Accept: text/plain\r\n";
    if(InpBridgeToken != "")
@@ -1079,9 +1104,9 @@ bool GetText(string path, string &response)
 
    int status;
    if(InpBridgeToken == "")
-      status = WebRequest("GET", url, NULL, NULL, InpRequestTimeoutMs, data, 0, result, result_headers);
+      status = WebRequest("GET", url, NULL, NULL, HttpTimeoutForPath(path), data, 0, result, result_headers);
    else
-      status = WebRequest("GET", url, headers, InpRequestTimeoutMs, data, result, result_headers);
+      status = WebRequest("GET", url, headers, HttpTimeoutForPath(path), data, result, result_headers);
 
    int request_error = GetLastError();
    if(ArraySize(result) > 0)
@@ -1089,7 +1114,7 @@ bool GetText(string path, string &response)
 
    if(status >= 200 && status < 300)
    {
-      RecordHttpSuccess();
+      RecordHttpSuccess(path);
       return true;
    }
 
@@ -1121,9 +1146,6 @@ int JsonIntegerField(string json, string field, int fallback)
 
 bool PostJsonText(string path, string payload, string &response)
 {
-   if(!HttpAttemptAllowed(path))
-      return false;
-
    string url = InpServerUrl + path;
    string headers = "Content-Type: application/json\r\nAccept: text/plain, application/json\r\n";
    if(InpBridgeToken != "")
@@ -1138,7 +1160,7 @@ bool PostJsonText(string path, string payload, string &response)
    ArrayResize(result, 0);
 
    ResetLastError();
-   int status = WebRequest("POST", url, headers, InpRequestTimeoutMs, data, result, result_headers);
+   int status = WebRequest("POST", url, headers, HttpTimeoutForPath(path), data, result, result_headers);
    int request_error = GetLastError();
 
    response = "";
@@ -1147,7 +1169,7 @@ bool PostJsonText(string path, string payload, string &response)
 
    if(status >= 200 && status < 300)
    {
-      RecordHttpSuccess();
+      RecordHttpSuccess(path);
       if(path == "/api/market-data/ingest/mt5/ticks")
          RecordTickSuccess();
       return true;
@@ -1164,9 +1186,6 @@ bool PostJsonText(string path, string payload, string &response)
 
 bool PostJson(string path, string payload)
 {
-   if(!HttpAttemptAllowed(path))
-      return false;
-
    string url = InpServerUrl + path;
    string headers = "Content-Type: application/json\r\nAccept: application/json\r\n";
    if(InpBridgeToken != "")
@@ -1181,7 +1200,7 @@ bool PostJson(string path, string payload)
    ArrayResize(result, 0);
 
    ResetLastError();
-   int status = WebRequest("POST", url, headers, InpRequestTimeoutMs, data, result, result_headers);
+   int status = WebRequest("POST", url, headers, HttpTimeoutForPath(path), data, result, result_headers);
    int request_error = GetLastError();
 
    string response = "";
@@ -1190,7 +1209,7 @@ bool PostJson(string path, string payload)
 
    if(status >= 200 && status < 300)
    {
-      RecordHttpSuccess();
+      RecordHttpSuccess(path);
       if(path == "/api/market-data/ingest/mt5/ticks")
          RecordTickSuccess();
       return true;

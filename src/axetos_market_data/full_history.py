@@ -81,6 +81,8 @@ class FullHistoryJob:
     completed_at: datetime | None = None
     repair_started_at: datetime | None = None
     repair_completed_at: datetime | None = None
+    workflow: str = "full"
+    repair_pass: int = 0
 
 
 class FullHistoryBackfillManager:
@@ -130,7 +132,7 @@ class FullHistoryBackfillManager:
     def start(self, provider_key: str, symbols: list[tuple[str, str]]) -> dict[str, object]:
         with self._lock:
             existing_id = self._provider_job.get(provider_key)
-            if existing_id and self._jobs[existing_id].status == "running":
+            if existing_id and self._jobs[existing_id].status in {"running", "repairing"}:
                 raise RuntimeError("A full-history backfill is already running for this provider")
             job = FullHistoryJob(
                 job_id=uuid.uuid4().hex,
@@ -143,6 +145,80 @@ class FullHistoryBackfillManager:
             self._emit("backfill.discovery_started", "Ten-year history discovery started", provider_key,
                        {"job_id": job.job_id, "instruments": len(symbols)})
             return self._view(job)
+
+    def start_targeted(
+        self, provider_key: str, symbols: list[tuple[str, str, list[PlannedRange]]],
+        *, workflow: str = "recent_m1",
+    ) -> dict[str, object]:
+        """Start a planning-free targeted download job from already detected gaps."""
+        with self._lock:
+            existing_id = self._provider_job.get(provider_key)
+            if existing_id and self._jobs[existing_id].status in {"running", "repairing"}:
+                raise RuntimeError("A history operation is already running for this provider")
+            items: list[InstrumentProgress] = []
+            for provider_symbol, instrument, ranges in symbols:
+                merged = self._merge_ranges(ranges)
+                item = InstrumentProgress(provider_symbol, instrument, provider_key)
+                item.phase = "download"
+                item.scan_phase = "download"
+                item.discovery_complete = True
+                item.missing_ranges = merged
+                item.status = "queued" if merged else "completed"
+                items.append(item)
+            job = FullHistoryJob(
+                job_id=uuid.uuid4().hex, provider_key=provider_key,
+                created_at=self._now_factory(), instruments=items,
+                phase="download", workflow=workflow,
+            )
+            self._jobs[job.job_id] = job
+            self._provider_job[provider_key] = job.job_id
+            self._emit("repair.recent_m1_started", "Recent M1 gap recovery started", provider_key, {
+                "job_id": job.job_id, "instruments": len(items),
+                "ranges": sum(len(item.missing_ranges) for item in items),
+                "workflow": workflow,
+            })
+            return self._view(job)
+
+    def resume_targeted_after_repair(
+        self, provider_key: str, job_id: str,
+        ranges_by_instrument: dict[str, list[PlannedRange]],
+    ) -> bool:
+        """Append a single recent-M1 recovery pass to a full backfill before completion."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.provider_key != provider_key or job.status != "repairing":
+                return False
+            job.repair_pass += 1
+            job.status = "running"
+            job.phase = "recent_m1_download"
+            job.active_index = 0
+            total = 0
+            for item in job.instruments:
+                ranges = self._merge_ranges(ranges_by_instrument.get(item.instrument, []))
+                item.phase = "download"
+                item.scan_phase = "download"
+                item.status = "queued" if ranges else "completed"
+                item.missing_ranges = ranges
+                item.download_index = 0
+                item.current_request_id = None
+                item.request_kind = None
+                item.dispatched_at = None
+                item.retry_count = 0
+                item.bars_received = 0
+                item.bars_inserted = 0
+                item.batches_completed = 0
+                total += len(ranges)
+            self._emit("repair.recent_m1_download_started", "Post-backfill recent M1 gap download started", provider_key, {
+                "job_id": job.job_id, "ranges": total, "repair_pass": job.repair_pass,
+            })
+            return True
+
+    def job_context(self, provider_key: str, job_id: str) -> dict[str, object] | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.provider_key != provider_key:
+                return None
+            return {"workflow": job.workflow, "repair_pass": job.repair_pass, "status": job.status, "phase": job.phase}
 
     def next_request(self, provider_key: str) -> str:
         with self._lock:
@@ -602,7 +678,8 @@ class FullHistoryBackfillManager:
     def _view(job: FullHistoryJob) -> dict[str, object]:
         return {
             "job_id": job.job_id, "provider_key": job.provider_key, "status": job.status,
-            "phase": job.phase, "created_at": job.created_at.isoformat(),
+            "phase": job.phase, "workflow": job.workflow, "repair_pass": job.repair_pass,
+            "created_at": job.created_at.isoformat(),
             "completed_at": job.completed_at.isoformat() if job.completed_at else None,
             "repair_started_at": job.repair_started_at.isoformat() if job.repair_started_at else None,
             "repair_completed_at": job.repair_completed_at.isoformat() if job.repair_completed_at else None,

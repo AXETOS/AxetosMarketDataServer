@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from axetos_market_data.domain import Candle
-from axetos_market_data.full_history import FullHistoryBackfillManager
+from axetos_market_data.full_history import FullHistoryBackfillManager, PlannedRange
 from axetos_market_data.hierarchical_repair import HierarchicalCandleRepair
 from axetos_market_data.storage import MarketDataStore
 
@@ -125,3 +125,40 @@ def test_coarser_candidate_cannot_overwrite_finer_provenance(tmp_path) -> None:
     assert result.overwritten == 0
     assert result.retained_better_or_equal == 1
     assert store.read_candles(instrument, "1d", provider=provider)[0].close == Decimal("12")
+
+
+def test_targeted_recent_m1_job_downloads_only_supplied_ranges() -> None:
+    now = datetime(2026, 7, 28, 12, tzinfo=UTC)
+    manager = FullHistoryBackfillManager(lambda *_: 0, now_factory=lambda: now)
+    ranges = [
+        PlannedRange("1m", now - timedelta(minutes=20), now - timedelta(minutes=11), 4),
+        PlannedRange("1m", now - timedelta(minutes=10), now - timedelta(minutes=1), 4),
+    ]
+    result = manager.start_targeted("P", [("EURUSD", "EUR/USD", ranges)])
+    assert result["workflow"] == "recent_m1"
+    command = manager.next_request("P").split("|")
+    assert command[:3] == ["BACKFILL", "EURUSD", "1m"]
+    # Adjacent minute ranges are merged into one exact repair request.
+    assert datetime.fromisoformat(command[3]) == now - timedelta(minutes=20)
+    assert datetime.fromisoformat(command[4]) == now - timedelta(minutes=1)
+    manager.batch_result("P", command[5], 20, 20, True)
+    assert manager.next_request("P") == ""
+    status = manager.status("P")["jobs"][0]
+    assert status["status"] == "completed"
+
+
+def test_full_job_can_resume_once_with_recent_m1_ranges() -> None:
+    now = datetime(2026, 7, 28, 12, tzinfo=UTC)
+    manager = FullHistoryBackfillManager(lambda *_: 0, now_factory=lambda: now)
+    started = manager.start("P", [("EURUSD", "EUR/USD")])
+    job_id = started["job_id"]
+    # Place the job in the state used by the post-download repair callback.
+    job = manager._jobs[job_id]
+    job.status = "repairing"
+    job.phase = "repair"
+    gap = PlannedRange("1m", now - timedelta(minutes=5), now - timedelta(minutes=1), 4)
+    assert manager.resume_targeted_after_repair("P", job_id, {"EUR/USD": [gap]})
+    context = manager.job_context("P", job_id)
+    assert context is not None and context["repair_pass"] == 1
+    command = manager.next_request("P").split("|")
+    assert command[:3] == ["BACKFILL", "EURUSD", "1m"]

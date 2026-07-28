@@ -38,7 +38,7 @@ from .streaming import LiveStreamHub, StreamFilter
 from .backups import BackupError, BackupService
 from .benchmark_jobs import BenchmarkJobManager
 from .bridge import (Mt5BridgeService, BridgeHeartbeatRequest, BridgeInstrumentsRequest, BridgeTicksRequest, BridgeQuotesRequest, BridgeCandlesRequest, InstrumentSelectionRequest)
-from .full_history import FullHistoryBackfillManager
+from .full_history import FullHistoryBackfillManager, PlannedRange
 from .history_worker import HistoryIngestionProcess
 from .hierarchical_repair import HierarchicalCandleRepair
 
@@ -194,6 +194,43 @@ def create_app(
     ) -> None:
         events.record("info", category, message, provider=provider, details=details)
 
+    def recent_m1_missing_ranges(
+        provider: str, instruments: list[str], *, hours: int = 24,
+    ) -> dict[str, list[PlannedRange]]:
+        end = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
+        start = end - timedelta(hours=hours)
+        market_calendar = MarketCalendar()
+        result: dict[str, list[PlannedRange]] = {}
+        for instrument in instruments:
+            existing = set(store.read_candle_times(provider, instrument, "1m", start, end + timedelta(minutes=1)))
+            ranges: list[PlannedRange] = []
+            gap_start: datetime | None = None
+            cursor = start
+            while cursor <= end:
+                missing = market_calendar.is_expected_open(instrument, cursor) and cursor not in existing
+                if missing and gap_start is None:
+                    gap_start = cursor
+                elif not missing and gap_start is not None:
+                    ranges.append(PlannedRange("1m", gap_start, cursor - timedelta(minutes=1), 4))
+                    gap_start = None
+                cursor += timedelta(minutes=1)
+            if gap_start is not None:
+                ranges.append(PlannedRange("1m", gap_start, end, 4))
+            result[instrument] = ranges
+        return result
+
+    def mark_recent_m1_unresolved_bad(
+        provider: str, ranges_by_instrument: dict[str, list[PlannedRange]], reason: str,
+    ) -> int:
+        marked = 0
+        for instrument, ranges in ranges_by_instrument.items():
+            for value in ranges:
+                store.mark_history_bad_range(
+                    provider, instrument, value.timeframe, value.start, value.end, reason, None
+                )
+                marked += 1
+        return marked
+
     def repair_full_history(provider: str, job_id: str, instruments: list[str]) -> None:
         def run() -> None:
             repair = HierarchicalCandleRepair(store)
@@ -213,6 +250,38 @@ def create_app(
             except Exception as exc:  # keep the coordinator moving and expose the failure
                 full_history.complete_repair(provider, job_id, {}, error=str(exc))
                 return
+
+            context = full_history.job_context(provider, job_id) or {}
+            workflow = str(context.get("workflow", "full"))
+            repair_pass = int(context.get("repair_pass", 0))
+            ranges = recent_m1_missing_ranges(provider, instruments, hours=24)
+            gap_count = sum(len(values) for values in ranges.values())
+            events.record(
+                "warning" if gap_count else "info",
+                "repair.recent_m1_scan_completed",
+                "Last-24-hours M1 gap scan completed",
+                provider=provider,
+                details={"job_id": job_id, "workflow": workflow, "repair_pass": repair_pass,
+                         "instruments": len(instruments), "missing_ranges": gap_count},
+            )
+
+            # Every full backfill gets exactly one targeted recent-M1 recovery pass.
+            if workflow == "full" and repair_pass == 0 and gap_count:
+                if full_history.resume_targeted_after_repair(provider, job_id, ranges):
+                    return
+
+            unresolved = 0
+            if gap_count:
+                unresolved = mark_recent_m1_unresolved_bad(
+                    provider, ranges, "recent_m1_unresolved_after_targeted_repair"
+                )
+                events.record(
+                    "warning", "repair.recent_m1_bad_ranges",
+                    "Unresolved recent M1 gaps were marked bad and skipped",
+                    provider=provider, details={"job_id": job_id, "ranges": unresolved},
+                )
+            summary = {**summary, "recent_m1_ranges_found": gap_count,
+                       "recent_m1_bad_ranges": unresolved, "recent_m1_window_hours": 24}
             full_history.complete_repair(provider, job_id, summary)
 
         threading.Thread(
@@ -554,6 +623,34 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(409, str(exc)) from exc
         events.record("info", "backfill.full_started", "Full-history background backfill started", provider=provider_key, details={"instruments": len(symbols)})
+        return result
+
+    @app.post("/api/full-history/{provider_key}/repair-recent-m1")
+    def repair_recent_m1(provider_key: str) -> dict[str, object]:
+        worker = supervisor.get(provider_key)
+        if worker is None:
+            raise HTTPException(404, "Provider not found")
+        if worker.config.kind.lower() != "mt5":
+            raise HTTPException(400, "Recent M1 repair requires an MT5 provider")
+        resolver = SymbolResolver(store)
+        symbols: list[tuple[str, str]] = []
+        for provider_symbol in worker.config.normalized_symbols():
+            resolved = resolver.resolve(provider_key, provider_symbol)
+            symbols.append((provider_symbol, normalize_instrument(resolved.canonical_instrument)))
+        ranges = recent_m1_missing_ranges(provider_key, [instrument for _, instrument in symbols], hours=24)
+        planned = [
+            (provider_symbol, instrument, ranges.get(instrument, []))
+            for provider_symbol, instrument in symbols if ranges.get(instrument)
+        ]
+        if not planned:
+            events.record("info", "repair.recent_m1_completed",
+                          "Last-24-hours M1 repair found no gaps", provider=provider_key,
+                          details={"instruments": len(symbols), "ranges": 0})
+            return {"provider_key": provider_key, "status": "completed", "ranges": 0}
+        try:
+            result = full_history.start_targeted(provider_key, planned, workflow="recent_m1")
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return result
 
     @app.get("/api/full-history")
@@ -1268,7 +1365,7 @@ CONTROL_CENTER_HTML = r'''<!doctype html><html lang="en"><head><meta charset="ut
 <dialog id="benchmarkEditor" class="benchmark-dialog"><div class="top"><div><h2 style="margin:0">Performance benchmark</h2><div class="muted">Administrator diagnostics for synthetic ingestion throughput.</div></div><button class="secondary" onclick="benchmarkEditor.close()">Close</button></div><div class="benchmark-warning">Benchmarking creates heavy synthetic database load and can affect live ingestion. Run it only on a development or maintenance instance.</div><form id="benchmarkForm"><label>Ticks<input name="ticks" type="number" min="1000" max="10000000" value="100000"></label><label>Instruments<input name="instruments" type="number" min="1" max="10000" value="10"></label><label class="wide">Batch sizes, comma separated<input name="batch_sizes" value="1000,5000,10000"><small class="muted">Use one value for a single run or several values to compare them.</small></label><div class="actions wide"><button type="submit">Start benchmark</button></div></form><div id="benchmarkProgress" class="benchmark-progress">No benchmark has been started.</div><div id="benchmarkResults" class="benchmark-results" style="display:none"></div></dialog>
 <script>
 const root=document.getElementById('providers'),eventsRoot=document.getElementById('events'),eventPageLabel=document.getElementById('eventPage'),stats=document.getElementById('stats'),count=document.getElementById('count'),editor=document.getElementById('editor'),form=document.getElementById('form'),title=document.getElementById('title'),error=document.getElementById('error');let editing=null,editingSymbols=[];const esc=v=>String(v??'').replace(/[&<>\"]/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[x]));const apiError=(payload,fallback)=>{const detail=payload?.detail??payload?.message??fallback;if(Array.isArray(detail))return detail.map(item=>item?.msg||item?.message||JSON.stringify(item)).join('; ');if(detail&&typeof detail==='object')return detail.msg||detail.message||JSON.stringify(detail);return String(detail||fallback)};
-let eventPageNumber=1,eventPages=1,eventSearchTimer=null;async function load(){const [pr,sr,hr,mr,br,ar,fr]=await Promise.all([fetch('/api/providers'),fetch('/api/statistics'),fetch('/api/health'),fetch('/api/metrics'),fetch('/api/market-data/mt5/bridge/status'),fetch('/api/alerts/status'),fetch('/api/feed-status')]);const p=await pr.json(),s=await sr.json(),h=await hr.json(),m=await mr.json(),b=await br.json(),a=await ar.json(),f=await fr.json();const configuredInstruments=new Set(),selectedInstruments=new Set(),monitoredInstruments=new Set();for(const provider of p.providers){for(const symbol of (provider.symbols||[])){configuredInstruments.add(symbol.canonical_instrument);if(symbol.selected)selectedInstruments.add(symbol.canonical_instrument)}for(const feed of (provider.feeds||[]))monitoredInstruments.add(feed.instrument)}stats.innerHTML=[['Health',h.status],['Market feed',f.overall_state],['Connected providers',m.providers_live+'/'+m.providers_configured],['Configured instruments',configuredInstruments.size],['Selected instruments',selectedInstruments.size],['Monitored feeds',monitoredInstruments.size],['Stored instruments',s.instruments],['Ticks',s.ticks],['Candles',s.candles],['Database size',(m.database_size_bytes/1048576).toFixed(2)+' MB'],['Latest tick',s.latest_tick_utc?new Date(s.latest_tick_utc).toLocaleString():'-'],['Unresolved gaps',s.unresolved_gaps],['Quality issues',s.unresolved_quality_issues],['MT5 bridge terminals',b.heartbeats.length],['Alerts',a.enabled?'Configured':'Disabled'],['Bridge instruments',b.discovered_instruments],['Bridge queue',b.queue.queue_depth]].map(x=>`<div class="card"><div class="label">${x[0]}</div><div class="value">${x[1]}</div></div>`).join('');count.textContent=`${p.providers.length} configured`;root.innerHTML=p.providers.length?'':'<div class="card">No providers configured.</div>';for(const x of p.providers){const c=x.configuration,r=x.runtime,feeds=Array.isArray(x.feeds)?x.feeds:[],e=document.createElement('article');e.className='card';const feedRows=feeds.length?feeds.map(feed=>`<div><span class="label">${esc(feed.instrument)} feed</span><br><span class="feed-state feed-${String(feed.feed_state).toLowerCase()}">${esc(feed.feed_state)}</span> · ${Math.round(feed.unchanged_seconds)}s unchanged</div>`).join(''):'<div><span class="label">Market feed</span><br><span class="feed-state feed-inactive">INACTIVE</span></div>';e.innerHTML=`<div class="top"><div><div class="name">${esc(c.display_name)}</div><div class="key">${esc(c.provider_key)} · ${esc(c.kind)}</div></div><span class="status ${String(r.status==='Live'?'Connected':r.status).toLowerCase()}">${esc(r.status==='Live'?'Connected':r.status)}</span></div><div class="rows"><div><span class="label">MT5 terminal / broker</span><br>${c.kind==='mt5'?(r.status==='Failed'?`FAILED / DISCONNECTED`:`${r.terminal_running?'RUNNING':'STOPPED'} / ${r.broker_connected?'CONNECTED':'DISCONNECTED'}`):'-'}</div><div><span class="label">MT5 account</span><br>${c.kind==='mt5'?(r.account_logged_in?`${esc(r.account_login||'')} · ${esc(r.account_server||'')}`:'NOT LOGGED IN'):'-'}</div><div><span class="label">Provider observations</span><br>${r.ticks_received}</div><div><span class="label">Accepted / unchanged</span><br>${r.accepted_market_ticks||0} / ${r.ignored_unchanged_updates||0}</div><div><span class="label">Last observation</span><br>${r.last_tick_utc?new Date(r.last_tick_utc).toLocaleString():'-'}</div><div><span class="label">Auto-start</span><br>${c.auto_start?'Yes':'No'}</div><div><span class="label">Priority / fallback</span><br>${c.priority} / ${c.fallback_after_seconds}s</div><div><span class="label">Authoritative / standby observations</span><br>${r.authoritative_ticks} / ${r.standby_ticks}</div><div><span class="label">Recovery attempts / candles</span><br>${r.recovery_attempts||0} / ${r.recovery_candles_written||0}</div>${feedRows}<div><span class="label">Maintenance</span><br>${x.maintenance?`${esc(x.maintenance.status)} · next ${x.maintenance.next_run_utc?new Date(x.maintenance.next_run_utc).toLocaleString():'-'}`:'Disabled'}</div></div><div class="actions"><button onclick="editProvider('${esc(c.provider_key)}')">Edit</button>${c.kind==='mt5'?`<button onclick="manageSymbols('${esc(c.provider_key)}')">Manage symbols</button>`:''}<button onclick="act('${esc(c.provider_key)}','start')">Start</button><button class="secondary" onclick="act('${esc(c.provider_key)}','stop')">Stop</button><button onclick="act('${esc(c.provider_key)}','restart')">Restart</button><button class="secondary" onclick="testProvider('${esc(c.provider_key)}')">Test connection</button>${c.kind==='mt5'?`<button class="secondary" onclick="fullHistory('${esc(c.provider_key)}')">Backfill tiered history</button><button class="danger" onclick="rebuildHistory('${esc(c.provider_key)}')">Rebuild clean 7d</button><button class="secondary" onclick="repairGaps('${esc(c.provider_key)}')">Repair gaps</button>${c.maintenance_enabled?`<button class="secondary" onclick="act('${esc(c.provider_key)}','maintenance')">Run maintenance</button>`:''}`:''}<button class="danger" onclick="removeProvider('${esc(c.provider_key)}')">Remove</button></div>${r.last_error?`<div class="error">${esc(r.last_error)}</div>`:''}`;root.appendChild(e)}}
+let eventPageNumber=1,eventPages=1,eventSearchTimer=null;async function load(){const [pr,sr,hr,mr,br,ar,fr]=await Promise.all([fetch('/api/providers'),fetch('/api/statistics'),fetch('/api/health'),fetch('/api/metrics'),fetch('/api/market-data/mt5/bridge/status'),fetch('/api/alerts/status'),fetch('/api/feed-status')]);const p=await pr.json(),s=await sr.json(),h=await hr.json(),m=await mr.json(),b=await br.json(),a=await ar.json(),f=await fr.json();const configuredInstruments=new Set(),selectedInstruments=new Set(),monitoredInstruments=new Set();for(const provider of p.providers){for(const symbol of (provider.symbols||[])){configuredInstruments.add(symbol.canonical_instrument);if(symbol.selected)selectedInstruments.add(symbol.canonical_instrument)}for(const feed of (provider.feeds||[]))monitoredInstruments.add(feed.instrument)}stats.innerHTML=[['Health',h.status],['Market feed',f.overall_state],['Connected providers',m.providers_live+'/'+m.providers_configured],['Configured instruments',configuredInstruments.size],['Selected instruments',selectedInstruments.size],['Monitored feeds',monitoredInstruments.size],['Stored instruments',s.instruments],['Ticks',s.ticks],['Candles',s.candles],['Database size',(m.database_size_bytes/1048576).toFixed(2)+' MB'],['Latest tick',s.latest_tick_utc?new Date(s.latest_tick_utc).toLocaleString():'-'],['Unresolved gaps',s.unresolved_gaps],['Quality issues',s.unresolved_quality_issues],['MT5 bridge terminals',b.heartbeats.length],['Alerts',a.enabled?'Configured':'Disabled'],['Bridge instruments',b.discovered_instruments],['Bridge queue',b.queue.queue_depth]].map(x=>`<div class="card"><div class="label">${x[0]}</div><div class="value">${x[1]}</div></div>`).join('');count.textContent=`${p.providers.length} configured`;root.innerHTML=p.providers.length?'':'<div class="card">No providers configured.</div>';for(const x of p.providers){const c=x.configuration,r=x.runtime,feeds=Array.isArray(x.feeds)?x.feeds:[],e=document.createElement('article');e.className='card';const feedRows=feeds.length?feeds.map(feed=>`<div><span class="label">${esc(feed.instrument)} feed</span><br><span class="feed-state feed-${String(feed.feed_state).toLowerCase()}">${esc(feed.feed_state)}</span> · ${Math.round(feed.unchanged_seconds)}s unchanged</div>`).join(''):'<div><span class="label">Market feed</span><br><span class="feed-state feed-inactive">INACTIVE</span></div>';e.innerHTML=`<div class="top"><div><div class="name">${esc(c.display_name)}</div><div class="key">${esc(c.provider_key)} · ${esc(c.kind)}</div></div><span class="status ${String(r.status==='Live'?'Connected':r.status).toLowerCase()}">${esc(r.status==='Live'?'Connected':r.status)}</span></div><div class="rows"><div><span class="label">MT5 terminal / broker</span><br>${c.kind==='mt5'?(r.status==='Failed'?`FAILED / DISCONNECTED`:`${r.terminal_running?'RUNNING':'STOPPED'} / ${r.broker_connected?'CONNECTED':'DISCONNECTED'}`):'-'}</div><div><span class="label">MT5 account</span><br>${c.kind==='mt5'?(r.account_logged_in?`${esc(r.account_login||'')} · ${esc(r.account_server||'')}`:'NOT LOGGED IN'):'-'}</div><div><span class="label">Provider observations</span><br>${r.ticks_received}</div><div><span class="label">Accepted / unchanged</span><br>${r.accepted_market_ticks||0} / ${r.ignored_unchanged_updates||0}</div><div><span class="label">Last observation</span><br>${r.last_tick_utc?new Date(r.last_tick_utc).toLocaleString():'-'}</div><div><span class="label">Auto-start</span><br>${c.auto_start?'Yes':'No'}</div><div><span class="label">Priority / fallback</span><br>${c.priority} / ${c.fallback_after_seconds}s</div><div><span class="label">Authoritative / standby observations</span><br>${r.authoritative_ticks} / ${r.standby_ticks}</div><div><span class="label">Recovery attempts / candles</span><br>${r.recovery_attempts||0} / ${r.recovery_candles_written||0}</div>${feedRows}<div><span class="label">Maintenance</span><br>${x.maintenance?`${esc(x.maintenance.status)} · next ${x.maintenance.next_run_utc?new Date(x.maintenance.next_run_utc).toLocaleString():'-'}`:'Disabled'}</div></div><div class="actions"><button onclick="editProvider('${esc(c.provider_key)}')">Edit</button>${c.kind==='mt5'?`<button onclick="manageSymbols('${esc(c.provider_key)}')">Manage symbols</button>`:''}<button onclick="act('${esc(c.provider_key)}','start')">Start</button><button class="secondary" onclick="act('${esc(c.provider_key)}','stop')">Stop</button><button onclick="act('${esc(c.provider_key)}','restart')">Restart</button><button class="secondary" onclick="testProvider('${esc(c.provider_key)}')">Test connection</button>${c.kind==='mt5'?`<button class="secondary" onclick="fullHistory('${esc(c.provider_key)}')">Backfill tiered history</button><button class="danger" onclick="rebuildHistory('${esc(c.provider_key)}')">Rebuild clean 7d</button><button class="secondary" onclick="repairGaps('${esc(c.provider_key)}')">Repair gaps</button><button class="secondary" onclick="repairRecentM1('${esc(c.provider_key)}')">Repair last 24h (M1)</button>${c.maintenance_enabled?`<button class="secondary" onclick="act('${esc(c.provider_key)}','maintenance')">Run maintenance</button>`:''}`:''}<button class="danger" onclick="removeProvider('${esc(c.provider_key)}')">Remove</button></div>${r.last_error?`<div class="error">${esc(r.last_error)}</div>`:''}`;root.appendChild(e)}}
 function updateProviderForm(){const isMt5=form.elements.kind.value==='mt5';symbolsField.style.display=isMt5?'none':'';if(!isMt5&&!form.elements.symbols.value.trim())form.elements.symbols.value='EUR/USD'}
 function openAdd(){editing=null;editingSymbols=[];title.textContent='Add provider';form.reset();form.elements.poll_interval_seconds.value=1;form.elements.symbols.value='EUR/USD';form.elements.priority.value=100;form.elements.fallback_after_seconds.value=10;form.elements.batch_window_seconds.value=5;form.elements.batch_limit.value=50000;form.elements.maintenance_interval_minutes.value=60;form.elements.maintenance_backfill_days.value=2;form.elements.feed_quiet_seconds.value=60;form.elements.feed_stalled_seconds.value=180;form.elements.feed_inactive_seconds.value=600;form.elements.maintenance_enabled.checked=false;form.elements.enabled.checked=true;form.elements.auto_start.checked=true;form.elements.provider_key.readOnly=false;error.textContent='';updateProviderForm();editor.showModal()}
 async function editProvider(key){const r=await fetch('/api/providers/'+encodeURIComponent(key)),x=await r.json(),c=x.configuration;editing=key;editingSymbols=Array.isArray(c.symbols)?c.symbols:[];title.textContent='Edit '+c.display_name;form.elements.provider_key.value=c.provider_key;form.elements.provider_key.readOnly=true;form.elements.display_name.value=c.display_name;form.elements.kind.value=c.kind;form.elements.poll_interval_seconds.value=c.poll_interval_seconds;form.elements.symbols.value=c.symbols.join(',');updateProviderForm();form.elements.terminal_path.value=c.terminal_path||'';form.elements.account_login.value=c.account_login||'';form.elements.account_server.value=c.account_server||'';form.elements.mt5_password.value=c.password_configured?'********':'';form.elements.priority.value=c.priority;form.elements.fallback_after_seconds.value=c.fallback_after_seconds;form.elements.batch_window_seconds.value=c.batch_window_seconds;form.elements.batch_limit.value=c.batch_limit;form.elements.maintenance_interval_minutes.value=c.maintenance_interval_minutes;form.elements.maintenance_backfill_days.value=c.maintenance_backfill_days;form.elements.feed_quiet_seconds.value=c.feed_quiet_seconds??60;form.elements.feed_stalled_seconds.value=c.feed_stalled_seconds??180;form.elements.feed_inactive_seconds.value=c.feed_inactive_seconds??600;form.elements.maintenance_enabled.checked=c.maintenance_enabled;form.elements.enabled.checked=c.enabled;form.elements.auto_start.checked=c.auto_start;editor.showModal()}
@@ -1280,6 +1377,7 @@ async function loadSymbols(refresh){if(!symbolProvider)return;symbolList.innerHT
 async function saveSymbol(providerSymbol,index){const state=document.getElementById('state_'+index).value,canonical=document.getElementById('canon_'+index).value.trim(),priority=document.getElementById('priority_'+index).value;const payload={provider_key:symbolProvider,provider_symbol:providerSymbol,canonical_instrument:canonical,enabled:state==='confirmed',allow_live:state==='confirmed',allow_history:state==='confirmed',priority_override:priority===''?null:Number(priority)};const r=await fetch('/api/symbol-policies',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(payload)}),x=await r.json();if(!r.ok){alert(x.detail||'Could not save mapping');return}await loadSymbols(false);load()}
 async function fullHistory(key){if(!confirm('Start a low-priority tiered history backfill for every configured instrument? MT5 availability is checked before every range and existing candles are preserved.'))return;const r=await fetch('/api/full-history/'+encodeURIComponent(key),{method:'POST'});const x=await r.json();alert(r.ok?'Full-history backfill started in the background':(x.detail||'Could not start full-history backfill'));load()}
 async function backfill(key,symbol){const r=await fetch('/api/backfill',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider_key:key,symbol:symbol,timeframe:'1m',days:7})});const x=await r.json();alert(r.ok?`Backfill complete: ${x.written} candles, ${x.gaps} gaps`:(x.detail||'Backfill failed'));load()}
+async function repairRecentM1(key){const r=await fetch(`/api/full-history/${encodeURIComponent(key)}/repair-recent-m1`,{method:'POST'});const x=await r.json();alert(r.ok?(x.ranges===0?'No M1 gaps found in the last 24 hours':'Recent M1 repair started'):(x.detail||'Recent M1 repair failed'));load()}
 async function repairGaps(key){const r=await fetch('/api/gaps/repair',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider_key:key,limit:500})});const x=await r.json();alert(r.ok?`Repair complete: ${x.gaps_resolved} resolved, ${x.gaps_remaining} remaining`:(x.detail||'Repair failed'));load()}
 async function rebuildHistory(key){if(!confirm(`Delete and rebuild all stored candle history for ${key} from fresh 1-minute MT5 history?`))return;const r=await fetch('/api/history/rebuild',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider_key:key,days:7})});const x=await r.json();alert(r.ok?`Clean rebuild complete for ${(x.rebuilt||[]).length} instruments`:(x.detail||'Rebuild failed'));load()}
 async function testProvider(key){const r=await fetch('/api/providers/'+encodeURIComponent(key)+'/test',{method:'POST'}),x=await r.json();alert(r.ok?(x.ok?'Connection test passed.':'Connection test completed with warnings.'):(x.detail||'Connection test failed'))}

@@ -4,6 +4,12 @@ A standalone Python market-data server for collecting financial market ticks, bu
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.
 
+## Version 0.61.1
+
+Version 0.61.1 adds targeted recent M1 recovery. The management UI now provides **Repair last 24h (M1)** for MT5 providers. It scans the previous 24 hours, groups adjacent missing one-minute candles into exact ranges, submits only those ranges through the existing one-operation-per-provider MT5 history coordinator, runs bottom-up candle repair after download, verifies the recent window again, and persists any still-unavailable ranges as bad so the workflow always advances.
+
+Every full-history workflow now appends the same recent-M1 recovery pass after its first bottom-up repair. Operational events report the recent scan, targeted download start, final repair completion, and unresolved bad-range totals. The final `backfill.full_completed` event is emitted only after this post-backfill recovery and verification stage finishes.
+
 ## Version 0.61.0
 
 Version 0.61.0 replaces incremental range-by-range full-history backfill with a planning-first, hierarchical workflow. For each MT5 symbol the server first performs ten-year M1, H1, and D1 discovery sweeps, compares provider and local coverage, and records the provider's proven boundaries. Incomplete coverage is narrowed without downloading: ten-year ranges are split into years, incomplete years into months, H1/M1 months into days, and M1 days into hours. Complete sections disappear from the plan, unavailable sections are persisted as bad ranges and skipped, adjacent missing leaf ranges are merged, and only the finished missing-range plan is downloaded. Exactly one operation remains in flight per provider and retry exhaustion always marks the range bad and advances, preventing the coordinator freeze seen after a final `DISCOVERED_MISSING` result.

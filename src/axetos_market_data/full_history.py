@@ -102,7 +102,7 @@ class FullHistoryBackfillManager:
         local_count: Callable[[str, str, str, datetime, datetime], int],
         local_bounds: Callable[[str, str, str, datetime, datetime], tuple[datetime | None, datetime | None]] | None = None,
         *,
-        on_instrument_completed: Callable[[str, str], None] | None = None,
+        on_instrument_completed: Callable[[str, str, dict[str, object]], None] | None = None,
         on_download_completed: Callable[[str, str, list[str]], None] | None = None,
         on_event: Callable[[str, str, str, dict[str, object]], None] | None = None,
         bad_range_recorder: Callable[[str, str, str, datetime, datetime, str, int | None], None] | None = None,
@@ -211,6 +211,47 @@ class FullHistoryBackfillManager:
             self._emit("repair.recent_m1_download_started", "Post-backfill recent M1 gap download started", provider_key, {
                 "job_id": job.job_id, "ranges": total, "repair_pass": job.repair_pass,
             })
+            return True
+
+
+    def instrument_verified(
+        self, provider_key: str, job_id: str, instrument: str,
+        details: dict[str, object], *, error: str | None = None,
+    ) -> bool:
+        """Finish one instrument verification and allow the next instrument to dispatch."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.provider_key != provider_key or job.status != "running":
+                return False
+            if job.active_index >= len(job.instruments):
+                return False
+            item = job.instruments[job.active_index]
+            if item.instrument != instrument or item.status != "verifying":
+                return False
+            if error:
+                item.error = error
+                item.last_result = f"instrument verification failed: {error}"
+                self._mark_bad(
+                    item,
+                    PlannedRange(
+                        item.timeframe or "1m",
+                        item.missing_ranges[0].start if item.missing_ranges else self._now_factory(),
+                        item.missing_ranges[-1].end if item.missing_ranges else self._now_factory(),
+                        self._LEAF_DEPTH.get(item.timeframe or "1m", 4),
+                    ),
+                    "instrument_verification_failed", None,
+                )
+                self._emit("repair.instrument_failed", "Instrument refresh verification failed", provider_key, {
+                    "job_id": job_id, "instrument": instrument, "error": error, **details,
+                })
+            else:
+                item.error = None
+                item.last_result = "instrument refresh verified"
+                self._emit("repair.instrument_completed", "Instrument refresh and repair verified", provider_key, {
+                    "job_id": job_id, "instrument": instrument, **details,
+                })
+            item.phase = "completed"
+            item.status = "completed"
             return True
 
     def job_context(self, provider_key: str, job_id: str) -> dict[str, object] | None:
@@ -474,16 +515,26 @@ class FullHistoryBackfillManager:
                 self._set_range(item, current)
                 self._new_request(item, "backfill")
                 return
-            item.phase = "completed"
-            item.status = "completed"
-            self._emit("backfill.download_completed", "Missing-history download completed", job.provider_key, {
-                "job_id": job.job_id, "instrument": item.instrument,
-                "planned_ranges": len(item.missing_ranges), "bad_ranges": len(item.bad_ranges),
-                "candles_received": item.bars_received, "candles_stored": item.bars_inserted,
+            details = {
+                "job_id": job.job_id, "workflow": job.workflow, "repair_pass": job.repair_pass,
+                "phase": job.phase, "timeframe": item.timeframe,
+                "from_utc": item.missing_ranges[0].start if item.missing_ranges else None,
+                "to_utc": item.missing_ranges[-1].end if item.missing_ranges else None,
+                "ranges": len(item.missing_ranges), "candles_received": item.bars_received,
+                "candles_stored": item.bars_inserted,
                 "candles_skipped": max(0, item.bars_received - item.bars_inserted),
+                "planned_ranges": len(item.missing_ranges), "bad_ranges": len(item.bad_ranges),
+            }
+            self._emit("backfill.download_completed", "Missing-history download completed", job.provider_key, {
+                "instrument": item.instrument, **details,
             })
             if self._on_instrument_completed is not None:
-                self._on_instrument_completed(job.provider_key, item.instrument)
+                item.phase = "verifying"
+                item.status = "verifying"
+                self._on_instrument_completed(job.provider_key, item.instrument, details)
+            else:
+                item.phase = "completed"
+                item.status = "completed"
 
     def _configure_discovery(self, item: InstrumentProgress) -> None:
         timeframe = self._DISCOVERY_TIMEFRAMES[item.discovery_index]

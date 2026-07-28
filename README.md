@@ -1,8 +1,8 @@
 # Axetos Market Data Server
 
-## Version 0.61.4
+## Version 0.61.5
 
-Version 0.61.4 makes the recent 24-hour M1 refresh strictly authoritative. MT5 bridge v1.28 identifies upload chunk position. On the first chunk for each symbol, the dedicated history process atomically removes every local M1 candle and provenance row inside the requested 24-hour window, including provisional or misaligned candles, and inserts the official MT5 series. Remaining chunks are force-upserted without quality checks. Every MT5-returned candle is counted as stored, marked provider-authoritative, and higher timeframes are rebuilt after the complete refresh. Minutes MT5 does not return remain absent and can be reported as unavailable rather than preserving malformed local candles.
+Version 0.61.5 makes the recent 24-hour M1 refresh strictly sequential per instrument. The coordinator pauses after each symbol upload, verifies the authoritative row count and UTC minute alignment directly from persistent storage, reloads the same chart-facing read path, rebuilds H1/D1/W1/MN1 for that symbol, and only then dispatches the next instrument. Verification failures are persisted as bad ranges and do not freeze the provider workflow. Operational events now expose per-instrument COMPLETE/BAD outcomes and database/chart verification totals.
 
 ## Version 0.61.3
 

@@ -219,6 +219,101 @@ def create_app(
                 marked += 1
         return marked
 
+    def verify_recent_m1_instrument(
+        provider: str, instrument: str, details: dict[str, object],
+    ) -> None:
+        """Verify and rebuild one authoritative recent-M1 instrument before advancing."""
+        workflow = str(details.get("workflow", "full"))
+        phase = str(details.get("phase", "download"))
+        repair_pass = int(details.get("repair_pass", 0))
+        is_recent_refresh = workflow == "recent_m1" or phase == "recent_m1_download" or repair_pass > 0
+        job_id = str(details.get("job_id", ""))
+
+        if not is_recent_refresh:
+            full_history.instrument_verified(
+                provider, job_id, instrument, {"verification": "not_required_for_history_download"}
+            )
+            return
+
+        def run() -> None:
+            started = datetime.now(UTC)
+            start = details.get("from_utc")
+            end = details.get("to_utc")
+            expected = int(details.get("candles_received", 0))
+            verification: dict[str, object] = {
+                "workflow": workflow, "repair_pass": repair_pass,
+                "expected_provider_rows": expected,
+                "verification_started_at": started.isoformat(),
+            }
+            try:
+                if not isinstance(start, datetime) or not isinstance(end, datetime):
+                    raise RuntimeError("Recent M1 verification window is unavailable")
+
+                persisted = store.read_candles(
+                    instrument, "1m", limit=5000, provider=provider,
+                    from_utc=start, to_utc=end,
+                )
+                aligned = sum(
+                    1 for candle in persisted
+                    if candle.open_time.second == 0 and candle.open_time.microsecond == 0
+                )
+                if len(persisted) != expected:
+                    raise RuntimeError(
+                        f"Authoritative M1 verification count mismatch: expected={expected}, persisted={len(persisted)}"
+                    )
+                if aligned != len(persisted):
+                    raise RuntimeError(
+                        f"Authoritative M1 verification found {len(persisted) - aligned} misaligned rows"
+                    )
+
+                repair = HierarchicalCandleRepair(store)
+
+                def stage_event(category: str, item_instrument: str, timeframe: str, stage: dict[str, object]) -> None:
+                    events.record(
+                        "warning" if int(stage.get("errors", 0)) else "info",
+                        category,
+                        "Instrument candle repair stage started" if category.endswith("started") else "Instrument candle repair stage completed",
+                        provider=provider, instrument=item_instrument,
+                        details={"job_id": job_id, "target_timeframe": timeframe, **stage},
+                    )
+
+                repair_summary = repair.run(provider, [instrument], on_stage=stage_event)
+
+                # The chart API reads directly from this same persistent store. Reload it
+                # after repair so completion proves the chart-facing path sees the refresh.
+                chart_rows = store.read_candles(
+                    instrument, "1m", limit=5000, provider=provider,
+                    from_utc=start, to_utc=end,
+                )
+                if len(chart_rows) != expected:
+                    raise RuntimeError(
+                        f"Chart-path verification count mismatch: expected={expected}, chart_rows={len(chart_rows)}"
+                    )
+
+                verification.update({
+                    "window_start": start.isoformat(), "window_end": end.isoformat(),
+                    "database_rows_verified": len(persisted),
+                    "chart_rows_verified": len(chart_rows),
+                    "aligned_rows_verified": aligned,
+                    "higher_timeframes_rebuilt": True,
+                    "repair_summary": repair_summary,
+                    "verification_completed_at": datetime.now(UTC).isoformat(),
+                    "status": "COMPLETE",
+                })
+                full_history.instrument_verified(provider, job_id, instrument, verification)
+            except Exception as exc:
+                verification.update({
+                    "status": "BAD", "error": str(exc),
+                    "verification_completed_at": datetime.now(UTC).isoformat(),
+                })
+                full_history.instrument_verified(
+                    provider, job_id, instrument, verification, error=str(exc)
+                )
+
+        threading.Thread(
+            target=run, name=f"recent-m1-verify-{provider}-{instrument}", daemon=True,
+        ).start()
+
     def repair_full_history(provider: str, job_id: str, instruments: list[str]) -> None:
         def run() -> None:
             repair = HierarchicalCandleRepair(store)
@@ -233,15 +328,26 @@ def create_app(
                     details={"target_timeframe": timeframe, **details},
                 )
 
+            context = full_history.job_context(provider, job_id) or {}
+            workflow = str(context.get("workflow", "full"))
+            repair_pass = int(context.get("repair_pass", 0))
+
+            # Recent-M1 jobs already verified and rebuilt every instrument before the
+            # coordinator advanced. Do not perform a second all-instrument repair pass.
+            if workflow == "recent_m1" or repair_pass > 0:
+                full_history.complete_repair(provider, job_id, {
+                    "recent_m1_mode": "sequential_authoritative_refresh",
+                    "instruments_verified_sequentially": len(instruments),
+                    "recent_m1_window_hours": 24,
+                })
+                return
+
             try:
                 summary = repair.run(provider, instruments, on_stage=stage_event)
             except Exception as exc:  # keep the coordinator moving and expose the failure
                 full_history.complete_repair(provider, job_id, {}, error=str(exc))
                 return
 
-            context = full_history.job_context(provider, job_id) or {}
-            workflow = str(context.get("workflow", "full"))
-            repair_pass = int(context.get("repair_pass", 0))
             should_run_official_m1 = workflow == "full" and repair_pass == 0
             ranges = (
                 recent_m1_missing_ranges(provider, instruments, hours=24)
@@ -281,6 +387,7 @@ def create_app(
         lambda provider, instrument, timeframe, start, end: store.candle_bounds_range(
             provider, instrument, timeframe, start, end
         ),
+        on_instrument_completed=verify_recent_m1_instrument,
         on_download_completed=repair_full_history,
         on_event=record_full_history_event,
         bad_range_recorder=store.mark_history_bad_range,

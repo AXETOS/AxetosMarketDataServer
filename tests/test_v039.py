@@ -59,6 +59,6 @@ def test_probe_endpoints_return_expected_http_status(tmp_path: Path) -> None:
 
 def test_v039_release_metadata() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert __version__ == "0.61.4"
-    assert 'version = "0.61.4"' in (root / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.61.4" in (root / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.61.5"
+    assert 'version = "0.61.5"' in (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.61.5" in (root / "README.md").read_text(encoding="utf-8")

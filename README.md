@@ -4,6 +4,12 @@ A standalone Python market-data server for collecting official MT5 candles, main
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders.
 
+## Version 0.62.2
+
+### Stable MT5 control-plane polling
+
+Bridge v1.31 polls active repair commands before routine tick and completed-minute traffic. Heartbeat and repair-command requests are exempt from bulk-upload transport backoff, so a slow or timed-out candle POST can no longer silence the bridge, starve an active repair, or make the provider appear disconnected for the entire backoff period. While a repair command is active, routine M1 polling is deferred until that command has been processed.
+
 ## Version 0.62.1
 
 ### Clean Windows shutdown and README structure

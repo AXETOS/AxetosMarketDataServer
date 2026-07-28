@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.30"
+#property version   "1.31"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -48,7 +48,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.30: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.31: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -68,21 +68,23 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    datetime now = TimeCurrent();
+
+   // Repair coordination has priority over routine traffic.  A blocked completed-M1
+   // upload must never prevent the bridge from polling an already-active repair job.
+   // The repair endpoint is also exempt from the shared transport backoff below.
+   if(RefreshRepairRequest())
+      return;
+
    if(g_last_heartbeat == 0 || now - g_last_heartbeat >= InpHeartbeatSeconds)
       SendHeartbeat();
 
    if(g_last_selection_refresh == 0 || now - g_last_selection_refresh >= InpSelectionRefreshSeconds)
-   {
       RefreshServerSelection();
-   }
 
    // Live ticks are feed-health/current-price evidence only. Official M1 candles
    // are polled from MT5 after the previous minute has closed.
    SendCurrentTicks();
    SendPreviousCompletedM1();
-
-   // Server-controlled full-history requests are polled after live traffic.
-   RefreshRepairRequest();
 }
 
 string ResolveProviderSymbol(string configured_symbol)
@@ -733,23 +735,23 @@ bool ProbeHistoryRange(string symbol, ENUM_TIMEFRAMES timeframe, string interval
    return true;
 }
 
-void RefreshRepairRequest()
+bool RefreshRepairRequest()
 {
    string path = "/api/market-data/mt5/repair-request.txt?providerKey=" + InpProviderKey +
                  "&terminalInstanceId=" + g_terminal_id;
    string response = "";
    if(!GetText(path, response))
-      return;
+      return false;
 
    StringTrimLeft(response);
    StringTrimRight(response);
    if(response == "")
-      return;
+      return false;
 
    string parts[];
    int part_count = StringSplit(response, '|', parts);
    if(part_count < 4)
-      return;
+      return false;
 
    string command = parts[0];
    StringTrimLeft(command); StringTrimRight(command);
@@ -803,7 +805,7 @@ void RefreshRepairRequest()
                         resolved, interval, start_time, end_time, g_pending_probe_attempts, probe_error);
             g_last_probe_progress_log = probe_now;
          }
-         return;
+         return true;
       }
 
       string result_path = "/api/market-data/mt5/history-availability?providerKey=" + InpProviderKey +
@@ -838,11 +840,11 @@ void RefreshRepairRequest()
       }
       if(probe_error != 0 && !history_sync_pending)
          PrintFormat("Axetos MT5 Bridge: %s availability probe failed for %s (%d).", interval, resolved, probe_error);
-      return;
+      return true;
    }
 
    if(command != "BACKFILL" || part_count != 6)
-      return;
+      return true;
 
    string start_time = parts[3];
    string end_time = parts[4];
@@ -888,6 +890,7 @@ void RefreshRepairRequest()
    else
       PrintFormat("Axetos MT5 Bridge: could not acknowledge backfill result for %s %s; request=%s remains in flight.",
                   resolved, interval, request_id);
+   return true;
 }
 
 void RefreshServerSelection()
@@ -981,8 +984,13 @@ string JoinedSymbols(string &symbols[])
    return value;
 }
 
-bool HttpAttemptAllowed()
+bool HttpAttemptAllowed(string path)
 {
+   // Heartbeat and repair coordination are control-plane requests. They must remain
+   // eligible even when a bulk candle upload has entered transport backoff.
+   if(path == "/api/market-data/ingest/mt5/heartbeat" ||
+      StringFind(path, "/api/market-data/mt5/repair-request.txt") == 0)
+      return true;
    if(g_http_retry_after > 0 && TimeLocal() < g_http_retry_after)
    {
       g_http_suppressed_requests++;
@@ -1054,7 +1062,7 @@ void RecordTickSuccess()
 bool GetText(string path, string &response)
 {
    response = "";
-   if(!HttpAttemptAllowed())
+   if(!HttpAttemptAllowed(path))
       return false;
 
    string url = InpServerUrl + path;
@@ -1113,7 +1121,7 @@ int JsonIntegerField(string json, string field, int fallback)
 
 bool PostJsonText(string path, string payload, string &response)
 {
-   if(!HttpAttemptAllowed())
+   if(!HttpAttemptAllowed(path))
       return false;
 
    string url = InpServerUrl + path;
@@ -1156,7 +1164,7 @@ bool PostJsonText(string path, string payload, string &response)
 
 bool PostJson(string path, string payload)
 {
-   if(!HttpAttemptAllowed())
+   if(!HttpAttemptAllowed(path))
       return false;
 
    string url = InpServerUrl + path;

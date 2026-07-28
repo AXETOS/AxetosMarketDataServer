@@ -83,6 +83,7 @@ class FullHistoryJob:
     repair_completed_at: datetime | None = None
     recent_refresh_started_at: datetime | None = None
     recent_refresh_completed_at: datetime | None = None
+    recent_pass_started_at: datetime | None = None
     workflow: str = "full"
     repair_pass: int = 0
 
@@ -183,6 +184,7 @@ class FullHistoryBackfillManager:
                 created_at=self._now_factory(), instruments=items,
                 phase="download", workflow=workflow,
                 recent_refresh_started_at=self._now_factory() if workflow == "recent_m1" else None,
+                recent_pass_started_at=self._now_factory() if workflow == "recent_m1" else None,
             )
             self._jobs[job.job_id] = job
             self._provider_job[provider_key] = job.job_id
@@ -203,8 +205,10 @@ class FullHistoryBackfillManager:
             if job is None or job.provider_key != provider_key or job.status != "repairing":
                 return False
             job.repair_pass += 1
+            pass_started = self._now_factory()
             if job.recent_refresh_started_at is None:
-                job.recent_refresh_started_at = self._now_factory()
+                job.recent_refresh_started_at = pass_started
+            job.recent_pass_started_at = pass_started
             job.status = "running"
             job.phase = "recent_m1_download"
             job.active_index = 0
@@ -282,6 +286,7 @@ class FullHistoryBackfillManager:
                 "repair_started_at": job.repair_started_at,
                 "recent_refresh_started_at": job.recent_refresh_started_at,
                 "recent_refresh_completed_at": job.recent_refresh_completed_at,
+                "recent_pass_started_at": job.recent_pass_started_at,
             }
 
     def request_context(self, provider_key: str, request_id: str | None) -> dict[str, object] | None:

@@ -8,9 +8,9 @@ BRIDGE = ROOT / "bridges" / "mt5" / "Experts" / "AxetosMarketDataBridge.mq5"
 
 
 def test_release_metadata_is_v041() -> None:
-    assert __version__ == "0.67.0"
-    assert 'version = "0.67.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.67.0" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.67.1"
+    assert 'version = "0.67.1"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.67.1" in (ROOT / "README.md").read_text(encoding="utf-8")
 
 
 def test_access_logging_is_disabled_by_default(monkeypatch) -> None:
@@ -26,7 +26,7 @@ def test_access_logging_can_be_enabled_by_cli() -> None:
 
 def test_bridge_captures_webrequest_error_before_response_decode() -> None:
     source = BRIDGE.read_text(encoding="utf-8")
-    assert '#property version   "3.00"' in source
+    assert '#property version   "3.01"' in source
     assert source.index("int error_code = GetLastError();") < source.index("CharArrayToString(result")
     assert 'WebRequest("GET"' in source
 

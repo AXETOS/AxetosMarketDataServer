@@ -51,4 +51,4 @@ def test_bridge_applies_empty_server_selection_as_stop() -> None:
     assert "RefreshTickSymbols" in source
     assert 'int count = response == "" ? 0' in source
     assert "ArrayResize(g_tick_symbols, accepted);" in source
-    assert '#property version   "3.00"' in source
+    assert '#property version   "3.01"' in source

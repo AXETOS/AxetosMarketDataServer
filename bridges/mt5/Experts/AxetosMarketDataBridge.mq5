@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "3.00"
+#property version   "3.01"
 #property strict
 #property description "Passive MT5 adapter controlled entirely by Axetos Market Data Server."
 
@@ -11,6 +11,7 @@ input int InpSelectionRefreshSeconds = 15;
 input int InpControlTimeoutMs = 1500;
 input int InpUploadTimeoutMs = 5000;
 input int InpUploadChunkSize = 100;
+input bool InpLogCommands = true;
 
 string g_terminal_id = "";
 string g_tick_symbols[];
@@ -24,7 +25,7 @@ int OnInit()
    EventSetTimer(1);
    SendHeartbeat();
    RefreshTickSymbols();
-   PrintFormat("Axetos MT5 Bridge v3.00 started; provider=%s server=%s", InpProviderKey, InpServerUrl);
+   PrintFormat("Axetos MT5 Bridge v3.01 started; provider=%s server=%s", InpProviderKey, InpServerUrl);
    return INIT_SUCCEEDED;
 }
 
@@ -136,6 +137,9 @@ void PollCommand()
       PrintFormat("Axetos MT5 Bridge: invalid server command: %s", command_text);
       return;
    }
+   if(InpLogCommands)
+      PrintFormat("Axetos MT5 Bridge: command received action=%s symbol=%s timeframe=%s from=%s to=%s request=%s",
+                  fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]);
    ExecuteCommand(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]);
 }
 
@@ -154,9 +158,13 @@ void ExecuteCommand(string action, string provider_symbol, string interval,
 
    MqlRates rates[];
    ArraySetAsSeries(rates, false);
+   if(InpLogCommands)
+      PrintFormat("Axetos MT5 Bridge: CopyRates started symbol=%s timeframe=%s request=%s", symbol, interval, request_id);
    ResetLastError();
    int copied = CopyRates(symbol, timeframe, from_time, to_time, rates);
    int error_code = GetLastError();
+   if(InpLogCommands)
+      PrintFormat("Axetos MT5 Bridge: CopyRates returned bars=%d error=%d request=%s", copied, error_code, request_id);
    ResetLastError();
 
    if(action == "DISCOVER" || action == "AVAILABILITY")
@@ -216,6 +224,9 @@ bool UploadCandles(string symbol, string interval, string request_id,
          "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"%s\",\"requestId\":\"%s\",\"chunkIndex\":%d,\"chunkCount\":%d,\"candles\":[%s]}",
          JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), JsonEscape(symbol), JsonEscape(symbol),
          JsonEscape(interval), JsonEscape(request_id), chunk_index, chunk_count, items);
+      if(InpLogCommands && (chunk_index == 0 || chunk_index == chunk_count - 1))
+         PrintFormat("Axetos MT5 Bridge: upload chunk %d/%d bars=%d request=%s",
+                     chunk_index + 1, chunk_count, last - first, request_id);
       string response = "";
       if(!HttpPost("/api/market-data/ingest/mt5/candles", payload, InpUploadTimeoutMs, response))
          return false;
@@ -255,7 +266,10 @@ void ReportResult(string provider_symbol, string interval, string request_id, bo
                  "&unavailable=" + ((!completed && error_code == 4401) ? "true" : "false") +
                  "&errorCode=" + IntegerToString(error_code) + "&requestId=" + request_id;
    string response = "";
-   HttpPost(path, "{}", InpControlTimeoutMs, response);
+   bool acknowledged = HttpPost(path, "{}", InpControlTimeoutMs, response);
+   if(InpLogCommands)
+      PrintFormat("Axetos MT5 Bridge: result %s received=%d stored=%d skipped=%d request=%s",
+                  acknowledged ? "acknowledged" : "not acknowledged", received, stored, skipped, request_id);
 }
 
 string ResolveSymbol(string configured)

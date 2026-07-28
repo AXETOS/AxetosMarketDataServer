@@ -294,56 +294,59 @@ def create_app(
             workflow = str(context.get("workflow", "full"))
             repair_pass = int(context.get("repair_pass", 0))
 
-            # The first authoritative recent-M1 pass may itself take several minutes.
-            # Refresh that exact run window once more before reporting completion so
-            # no completed minute is lost while the 24-hour operation was active.
-            needs_catchup = (
-                (workflow == "recent_m1" and repair_pass == 0)
-                or (workflow == "full" and repair_pass == 1)
-            )
+            # Recent-M1 refreshes are followed by two deterministic catch-up passes
+            # and a final ten-minute safety pass. Each pass covers the exact runtime
+            # of the preceding pass so a long MT5 command cannot leave a visible gap.
             if workflow == "recent_m1" or repair_pass > 0:
-                started = context.get("recent_refresh_started_at") or context.get("created_at")
                 finished = datetime.now(UTC)
-                if needs_catchup and isinstance(started, datetime):
-                    catchup_start = started.astimezone(UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
+                pass_started = context.get("recent_pass_started_at") or context.get("recent_refresh_started_at") or context.get("created_at")
+
+                first_catchup = (workflow == "recent_m1" and repair_pass == 0) or (workflow == "full" and repair_pass == 1)
+                second_catchup = (workflow == "recent_m1" and repair_pass == 1) or (workflow == "full" and repair_pass == 2)
+                final_safety = (workflow == "recent_m1" and repair_pass == 2) or (workflow == "full" and repair_pass == 3)
+
+                ranges: dict[str, list[PlannedRange]] = {}
+                event_category = ""
+                event_message = ""
+                if (first_catchup or second_catchup) and isinstance(pass_started, datetime):
+                    catchup_start = pass_started.astimezone(UTC).replace(second=0, microsecond=0) - timedelta(minutes=2)
                     catchup_end = finished.astimezone(UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
                     if catchup_end >= catchup_start:
-                        ranges = {
-                            instrument: [PlannedRange("1m", catchup_start, catchup_end, 4)]
-                            for instrument in instruments
-                        }
-                        events.record(
-                            "info", "repair.recent_m1_catchup_started",
-                            "Repair-window M1 catch-up refresh started",
-                            provider=provider,
-                            details={
-                                "job_id": job_id,
-                                "repair_started_at": started.isoformat(),
-                                "repair_download_finished_at": finished.isoformat(),
-                                "catchup_from_utc": catchup_start.isoformat(),
-                                "catchup_to_utc": catchup_end.isoformat(),
-                                "instruments": len(instruments),
-                            },
-                        )
-                        if full_history.resume_targeted_after_repair(provider, job_id, ranges):
-                            return
+                        ranges = {instrument: [PlannedRange("1m", catchup_start, catchup_end, 4)] for instrument in instruments}
+                        event_category = "repair.recent_m1_catchup_started"
+                        event_message = "Repair-window M1 catch-up refresh started"
+                elif final_safety:
+                    safety_end = finished.astimezone(UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
+                    safety_start = safety_end - timedelta(minutes=9)
+                    ranges = {instrument: [PlannedRange("1m", safety_start, safety_end, 4)] for instrument in instruments}
+                    event_category = "repair.recent_m1_final_safety_started"
+                    event_message = "Final ten-minute M1 safety refresh started"
+
+                if ranges:
+                    first_range = next(iter(ranges.values()))[0]
+                    events.record(
+                        "info", event_category, event_message, provider=provider,
+                        details={
+                            "job_id": job_id, "repair_pass": repair_pass,
+                            "from_utc": first_range.start.isoformat(), "to_utc": first_range.end.isoformat(),
+                            "instruments": len(instruments),
+                        },
+                    )
+                    if full_history.resume_targeted_after_repair(provider, job_id, ranges):
+                        return
+
                 events.record(
                     "info", "repair.recent_m1_catchup_completed",
-                    "Repair-window M1 catch-up refresh completed",
-                    provider=provider,
+                    "Repair-window M1 catch-up refresh completed", provider=provider,
                     details={
-                        "job_id": job_id,
-                        "repair_started_at": started.isoformat() if isinstance(started, datetime) else None,
-                        "repair_finished_at": finished.isoformat(),
-                        "repair_pass": repair_pass,
-                        "instruments": len(instruments),
+                        "job_id": job_id, "repair_pass": repair_pass,
+                        "repair_finished_at": finished.isoformat(), "instruments": len(instruments),
                     },
                 )
                 full_history.complete_repair(provider, job_id, {
-                    "recent_m1_mode": "sequential_authoritative_refresh_with_catchup",
+                    "recent_m1_mode": "authoritative_refresh_two_catchups_final_safety",
                     "instruments_refreshed_sequentially": len(instruments),
                     "recent_m1_window_hours": 24,
-                    "repair_started_at": started.isoformat() if isinstance(started, datetime) else None,
                     "repair_finished_at": finished.isoformat(),
                     "catchup_completed": True,
                 })

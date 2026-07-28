@@ -2,6 +2,14 @@
 
 A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
 
+## Version 0.67.1
+
+### Deterministic repair catch-up and bridge command logging
+
+Long 24-hour and full-history commands now finish with two authoritative M1 catch-up passes covering the exact runtime of the preceding pass, followed by a final ten-minute safety refresh. Completion is emitted only after those server-controlled requests have been stored.
+
+Bridge v3.01 remains passive but adds concise Journal visibility for server commands: command received, `CopyRates` started/returned, first and final upload chunks, and result acknowledgement. Heartbeat and tick successes remain quiet.
+
 ## Version 0.67.0
 
 ### Passive MT5 question-and-answer bridge

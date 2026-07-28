@@ -48,5 +48,6 @@ def test_recent_repair_source_schedules_run_window_catchup() -> None:
     assert "repair.recent_m1_catchup_started" in source
     assert "repair.recent_m1_catchup_completed" in source
     assert "recent_refresh_started_at" in source
-    assert "catchup_from_utc" in source
+    assert "recent_pass_started_at" in source
+    assert "repair.recent_m1_final_safety_started" in source
 

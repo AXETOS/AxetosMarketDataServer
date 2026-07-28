@@ -197,39 +197,15 @@ def create_app(
     def recent_m1_missing_ranges(
         provider: str, instruments: list[str], *, hours: int = 24,
     ) -> dict[str, list[PlannedRange]]:
+        """Return one complete recent M1 verification window per instrument.
+
+        Live observations create provisional M1 candles only. Recent repair therefore
+        never guesses from shapes or provenance: it asks MT5 for the complete official
+        window and replaces every candle MT5 returns.
+        """
         end = datetime.now(UTC).replace(second=0, microsecond=0) - timedelta(minutes=1)
-        start = end - timedelta(hours=hours)
-        market_calendar = MarketCalendar()
-        result: dict[str, list[PlannedRange]] = {}
-        for instrument in instruments:
-            candles = store.read_candles_range(
-                instrument, "1m", start, end + timedelta(minutes=1), provider
-            )
-            existing = {candle.open_time: candle for candle in candles}
-            ranges: list[PlannedRange] = []
-            suspicious_start: datetime | None = None
-            cursor = start
-            while cursor <= end:
-                candle = existing.get(cursor)
-                flatline = bool(
-                    candle is not None
-                    and candle.open == candle.high == candle.low == candle.close
-                )
-                suspicious = market_calendar.is_expected_open(instrument, cursor) and (
-                    candle is None or flatline
-                )
-                if suspicious and suspicious_start is None:
-                    suspicious_start = cursor
-                elif not suspicious and suspicious_start is not None:
-                    ranges.append(PlannedRange(
-                        "1m", suspicious_start, cursor - timedelta(minutes=1), 4
-                    ))
-                    suspicious_start = None
-                cursor += timedelta(minutes=1)
-            if suspicious_start is not None:
-                ranges.append(PlannedRange("1m", suspicious_start, end, 4))
-            result[instrument] = ranges
-        return result
+        start = end - timedelta(hours=hours) + timedelta(minutes=1)
+        return {instrument: [PlannedRange("1m", start, end, 4)] for instrument in instruments}
 
     def mark_recent_m1_unresolved_bad(
         provider: str, ranges_by_instrument: dict[str, list[PlannedRange]], reason: str,
@@ -266,34 +242,30 @@ def create_app(
             context = full_history.job_context(provider, job_id) or {}
             workflow = str(context.get("workflow", "full"))
             repair_pass = int(context.get("repair_pass", 0))
-            ranges = recent_m1_missing_ranges(provider, instruments, hours=24)
+            should_run_official_m1 = workflow == "full" and repair_pass == 0
+            ranges = (
+                recent_m1_missing_ranges(provider, instruments, hours=24)
+                if should_run_official_m1 else {}
+            )
             gap_count = sum(len(values) for values in ranges.values())
             events.record(
                 "warning" if gap_count else "info",
                 "repair.recent_m1_scan_completed",
-                "Last-24-hours M1 missing/flatline verification completed",
+                "Last-24-hours official M1 replacement window prepared",
                 provider=provider,
                 details={"job_id": job_id, "workflow": workflow, "repair_pass": repair_pass,
-                         "instruments": len(instruments), "missing_ranges": gap_count},
+                         "instruments": len(instruments), "verification_ranges": gap_count},
             )
 
             # Every full backfill gets exactly one targeted recent-M1 recovery pass.
-            if workflow == "full" and repair_pass == 0 and gap_count:
+            if should_run_official_m1 and gap_count:
                 if full_history.resume_targeted_after_repair(provider, job_id, ranges):
                     return
 
             unresolved = 0
-            if gap_count:
-                unresolved = mark_recent_m1_unresolved_bad(
-                    provider, ranges, "recent_m1_unresolved_or_verified_flatline_after_targeted_repair"
-                )
-                events.record(
-                    "warning", "repair.recent_m1_bad_ranges",
-                    "Unresolved recent M1 gaps were marked bad and skipped",
-                    provider=provider, details={"job_id": job_id, "ranges": unresolved},
-                )
-            summary = {**summary, "recent_m1_ranges_found": gap_count,
-                       "recent_m1_bad_ranges": unresolved, "recent_m1_window_hours": 24}
+            summary = {**summary, "recent_m1_verification_ranges": gap_count,
+                       "recent_m1_bad_ranges": unresolved, "recent_m1_window_hours": 24,
+                       "recent_m1_mode": "full_provider_replacement"}
             full_history.complete_repair(provider, job_id, summary)
 
         threading.Thread(
@@ -541,12 +513,15 @@ def create_app(
     def bridge_candles(request: BridgeCandlesRequest) -> dict[str, object]:
         received = len(request.candles)
         context = full_history.request_context(request.provider_key, request.request_id)
-        replace_flatline = bool(context) and (
+        replace_all = bool(context) and (
             str(context.get("workflow")) == "recent_m1"
             or str(context.get("phase")) == "recent_m1_download"
         ) and str(context.get("timeframe")) == "1m"
+        replace_flatline = False
         try:
-            stored = bridge.candles(request, replace_flatline=replace_flatline)
+            stored = bridge.candles(
+                request, replace_flatline=replace_flatline, replace_all=replace_all
+            )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         skipped = max(0, received - stored)
@@ -661,7 +636,7 @@ def create_app(
         ]
         if not planned:
             events.record("info", "repair.recent_m1_completed",
-                          "Last-24-hours M1 repair found no gaps", provider=provider_key,
+                          "Last-24-hours official M1 verification found no configured instruments", provider=provider_key,
                           details={"instruments": len(symbols), "ranges": 0})
             return {"provider_key": provider_key, "status": "completed", "ranges": 0}
         try:

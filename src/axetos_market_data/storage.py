@@ -508,6 +508,38 @@ class MarketDataStore:
             written = connection.total_changes - before
         return written
 
+    def replace_candles(self, candles: Iterable[Candle]) -> int:
+        """Upsert provider-confirmed candles and return rows that changed or were inserted."""
+        values = list(candles)
+        if not values:
+            return 0
+        changed = 0
+        with self.connect() as connection:
+            for candle in values:
+                key = (candle.provider, candle.instrument, candle.timeframe, _iso(candle.open_time))
+                row = connection.execute(
+                    """SELECT open,high,low,close,tick_count,volume,complete FROM candles
+                       WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc=?""",
+                    key,
+                ).fetchone()
+                incoming = (str(candle.open), str(candle.high), str(candle.low), str(candle.close),
+                            candle.tick_count, None if candle.volume is None else str(candle.volume),
+                            int(candle.complete))
+                if row is not None and tuple(str(value) if value is not None else None for value in row) == tuple(
+                    str(value) if value is not None else None for value in incoming
+                ):
+                    continue
+                connection.execute(
+                    """INSERT INTO candles(provider,instrument,timeframe,open_time_utc,open,high,low,close,tick_count,volume,complete)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(provider,instrument,timeframe,open_time_utc) DO UPDATE SET
+                         open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,
+                         tick_count=excluded.tick_count,volume=excluded.volume,complete=excluded.complete""",
+                    (*key, *incoming),
+                )
+                changed += 1
+        return changed
+
     def insert_missing_or_replace_flatline(self, candles: Iterable[Candle]) -> int:
         """Insert missing rows and replace only flatline rows with better provider data.
 

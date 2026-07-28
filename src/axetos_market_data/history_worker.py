@@ -74,10 +74,19 @@ def _history_worker_main(
             candles = [_deserialize_candle(item) for item in command["candles"]]
             mode = str(command.get("mode", "missing_only"))
             stored = (
-                store.insert_missing_or_replace_flatline(candles)
+                store.replace_candles(candles)
+                if mode == "replace_all"
+                else store.insert_missing_or_replace_flatline(candles)
                 if mode == "replace_flatline"
                 else store.insert_candles_missing(candles)
             )
+            if mode == "replace_all":
+                for candle in candles:
+                    store.set_candle_provenance(
+                        candle.provider, candle.instrument, candle.timeframe, candle.open_time,
+                        source_kind="mt5_provider", source_timeframe=candle.timeframe,
+                        quality_rank=700, coverage_complete=True, repair_run_id=None,
+                    )
             result_queue.put({
                 "job_id": job_id,
                 "ok": True,
@@ -157,7 +166,7 @@ class HistoryIngestionProcess:
 
     def insert_missing(
         self, candles: list[Candle], *, timeout_seconds: float = 30.0,
-        replace_flatline: bool = False,
+        replace_flatline: bool = False, replace_all: bool = False,
     ) -> int:
         if not candles:
             return 0
@@ -170,7 +179,7 @@ class HistoryIngestionProcess:
         command = {
             "job_id": job_id,
             "candles": [_serialize_candle(item) for item in candles],
-            "mode": "replace_flatline" if replace_flatline else "missing_only",
+            "mode": "replace_all" if replace_all else "replace_flatline" if replace_flatline else "missing_only",
         }
         try:
             self._commands.put(command, timeout=2.0)

@@ -1,5 +1,20 @@
 # Axetos Market Data Server
 
+## Version 0.61.3
+
+Version 0.61.3 simplifies recent live-candle verification. MT5 live observations build provisional one-minute candles in memory and individual one-second ticks are no longer persisted by the MT5 bridge. The manual and automatic recent-M1 repair now request the complete previous 24-hour M1 window for every configured instrument and replace every candle returned by MT5, rather than trying to infer bad candles from gaps or chart shapes. Provider-confirmed M1 candles receive authoritative provenance and the affected higher intervals are rebuilt afterward.
+
+### Recent M1 authority
+
+- Live observations update the current provisional M1 candle.
+- Individual MT5 ticks are not stored in the `ticks` table.
+- The last 24 hours are downloaded as official MT5 M1 candles.
+- Every returned M1 candle is inserted or replaced, including non-flat candles.
+- MT5-confirmed candles are marked `mt5_provider` with quality rank 700.
+- Bottom-up repair then rebuilds H1, D1, W1, and MN1 from verified M1 coverage.
+- MT5-unavailable ranges are marked bad and the coordinator continues.
+
+
 ## Version 0.61.2
 
 Version 0.61.2 strengthens recent M1 recovery. The 24-hour verifier now treats both missing and flatline one-minute candles as suspicious, merges adjacent suspicious minutes into exact MT5 requests, inserts missing candles, and replaces an existing flatline only when MT5 returns a demonstrably better non-flat candle. Existing non-flat candles and provider-confirmed equal flatlines are retained. Final completion occurs only after the second timestamp/value verification pass; remaining suspicious ranges are explicitly marked bad so the coordinator always advances.

@@ -17,6 +17,7 @@ from .service import MarketDataService
 from .storage import MarketDataStore
 from .history_worker import HistoryIngestionProcess
 from .symbols import SymbolResolver
+from .timeframes import bucket_start
 
 
 class BridgeHeartbeatRequest(BaseModel):
@@ -138,7 +139,7 @@ class Mt5BridgeService:
         self._history_process = history_process
         self._queue: queue.Queue[BridgeTicksRequest | None] = queue.Queue(maxsize=max_queue_batches)
         self.stats = QueueStats()
-        self._service = MarketDataService(self.store)
+        self._service = MarketDataService(self.store, persist_ticks=False)
         self._last_ingested: dict[tuple[str, str], datetime] = {}
         self._ingest_lock = RLock()
         self._queue_lock = RLock()
@@ -235,17 +236,21 @@ class Mt5BridgeService:
         return self._queue.qsize() <= 2
 
     def _insert_historical_low_priority(
-        self, candles: list[Candle], *, replace_flatline: bool = False,
+        self, candles: list[Candle], *, replace_flatline: bool = False, replace_all: bool = False,
     ) -> int:
         """Submit targeted BACKFILL storage outside the live queue process."""
         if self._history_process is None:
             # Compatibility fallback for direct service construction in unit tests.
             return (
-                self.store.insert_missing_or_replace_flatline(candles)
+                self.store.replace_candles(candles)
+                if replace_all
+                else self.store.insert_missing_or_replace_flatline(candles)
                 if replace_flatline
                 else self.store.insert_candles_missing(candles)
             )
-        return self._history_process.insert_missing(candles, replace_flatline=replace_flatline)
+        return self._history_process.insert_missing(
+            candles, replace_flatline=replace_flatline, replace_all=replace_all
+        )
 
     def quotes(self, request: BridgeQuotesRequest) -> int:
         """Persist provider-scoped quote snapshots for display only.
@@ -295,12 +300,19 @@ class Mt5BridgeService:
                     self._observation_sink(tick, False)
                 return False
             self._service.run([tick])
+            self.store.set_candle_provenance(
+                tick.provider, tick.instrument, "1m", bucket_start(tick.timestamp, "1m"),
+                source_kind="live_observation", source_timeframe=None, quality_rank=200,
+                coverage_complete=False, repair_run_id=None,
+            )
             self._last_ingested[key] = tick.timestamp
             if self._observation_sink is not None:
                 self._observation_sink(tick, True)
             return True
 
-    def candles(self, request: BridgeCandlesRequest, *, replace_flatline: bool = False) -> int:
+    def candles(
+        self, request: BridgeCandlesRequest, *, replace_flatline: bool = False, replace_all: bool = False,
+    ) -> int:
         """Import provider-confirmed historical bars without overwriting existing rows.
 
         Live minute candles are built exclusively from ticks. Historical M1 bars use the
@@ -324,9 +336,17 @@ class Mt5BridgeService:
                 ))
             except ValueError:
                 continue
-        values = self._sanitize_historical_minutes(incoming) if interval == "1m" else sorted(incoming, key=lambda item: item.open_time)
+        values = (
+            sorted(incoming, key=lambda item: item.open_time)
+            if interval == "1m" and replace_all
+            else self._sanitize_historical_minutes(incoming)
+            if interval == "1m"
+            else sorted(incoming, key=lambda item: item.open_time)
+        )
         written = (
-            self._insert_historical_low_priority(values, replace_flatline=replace_flatline)
+            self._insert_historical_low_priority(
+                values, replace_flatline=replace_flatline, replace_all=replace_all
+            )
             if request.request_id else self.store.upsert_candles(values)
         )
         if values and not request.request_id:

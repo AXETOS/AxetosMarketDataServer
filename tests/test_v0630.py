@@ -15,7 +15,7 @@ def test_bridge_channels_are_independent() -> None:
 
 def test_release_metadata() -> None:
     from axetos_market_data import __version__
-    assert __version__ == "0.67.1"
+    assert __version__ == "0.67.2"
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert readme.index("## Version 0.67.1") < readme.index("## Version 0.62.2")
+    assert readme.index("## Version 0.67.2") < readme.index("## Version 0.62.2")
 

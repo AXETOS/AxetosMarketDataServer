@@ -43,6 +43,7 @@ from .history_worker import HistoryIngestionProcess
 from .repair_worker import CandleRepairProcess
 from .hierarchical_repair import HierarchicalCandleRepair
 from .live_m1 import LiveM1CommandScheduler
+from .authoritative_refresh import AuthoritativeRefreshBuffer
 
 
 class BackfillRequest(BaseModel):
@@ -190,6 +191,7 @@ def create_app(
     history_process = HistoryIngestionProcess(store.database_target)
     repair_process = CandleRepairProcess(store.database_target)
     live_m1 = LiveM1CommandScheduler()
+    authoritative_refreshes = AuthoritativeRefreshBuffer()
     scheduler = MaintenanceScheduler(store)
     backups = BackupService(database_path, configuration_path)
     benchmark_jobs = BenchmarkJobManager()
@@ -655,24 +657,53 @@ def create_app(
         context = full_history.request_context(request.provider_key, request.request_id)
         if context is None and request.request_id:
             context = live_m1.context(request.provider_key, request.request_id)
+
+        recent_authoritative_reset = bool(context) and (
+            str(context.get("workflow")) == "recent_m1"
+            or str(context.get("phase")) == "recent_m1_download"
+        ) and str(context.get("timeframe")) == "1m"
+
+        # A 24-hour repair is a true authoritative reset. Buffer every MT5 chunk
+        # first, leaving the existing database window untouched. Only after the
+        # complete response has arrived do we replace the whole window atomically.
+        if recent_authoritative_reset:
+            try:
+                assembled = authoritative_refreshes.add(request)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            if assembled is None:
+                return {
+                    "acknowledgement": "buffered",
+                    "requestId": request.request_id,
+                    "received": received,
+                    "stored": received,
+                    "skipped": 0,
+                    "buffered": True,
+                }
+            try:
+                replaced = bridge.candles(
+                    assembled,
+                    replace_window=(context["from_utc"], context["to_utc"]),
+                )
+            except (ValueError, RuntimeError, TimeoutError) as exc:
+                authoritative_refreshes.discard(request.provider_key, request.request_id or "")
+                raise HTTPException(503, str(exc)) from exc
+            return {
+                "acknowledgement": "replaced_window",
+                "requestId": request.request_id,
+                "received": received,
+                "stored": received,
+                "skipped": 0,
+                "buffered": False,
+                "windowRowsWritten": replaced,
+            }
+
         replace_all = request.authoritative or (bool(context) and (
-            str(context.get("workflow")) in {"recent_m1", "live_m1"}
-            or str(context.get("phase")) in {"recent_m1_download", "live_m1"}
+            str(context.get("workflow")) == "live_m1"
+            or str(context.get("phase")) == "live_m1"
         ) and str(context.get("timeframe")) == "1m")
-        replace_flatline = False
-        removed_off_minute = 0
-        if replace_all and request.chunk_index == 1 and context is not None:
-            removed_off_minute = store.delete_off_minute_candles(
-                request.provider_key,
-                str(context.get("instrument")),
-                context["from_utc"],
-                context["to_utc"],
-            )
         try:
-            stored = bridge.candles(
-                request, replace_flatline=replace_flatline, replace_all=replace_all,
-                replace_window=None,
-            )
+            stored = bridge.candles(request, replace_all=replace_all)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         skipped = max(0, received - stored)
@@ -682,7 +713,6 @@ def create_app(
             "received": received,
             "stored": stored,
             "skipped": skipped,
-            "removedOffMinute": removed_off_minute,
         }
 
     @app.get("/api/market-data/mt5/discovered-instruments")

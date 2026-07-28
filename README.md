@@ -2,6 +2,14 @@
 
 A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
 
+## Version 0.67.2
+
+### Authoritative 24-hour M1 window reset
+
+**Repair last 24h (M1)** now buffers the complete MT5 response for one instrument before changing the database. After every chunk has arrived successfully, the server atomically deletes the exact local M1 window and inserts the complete returned MT5 candle set. Ordinary duplicate/backfill logic is not used: each accepted chunk reports `skipped=0`, and a failed or incomplete MT5 response leaves the old window untouched.
+
+Instruments remain sequential. After one instrument window is replaced, affected M15/H1/D1/W1/MN1 candles are rebuilt before the next instrument begins.
+
 ## Version 0.67.1
 
 ### Deterministic repair catch-up and bridge command logging

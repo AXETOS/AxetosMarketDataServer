@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.33"
+#property version   "1.34"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -56,7 +56,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.33: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.34: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -77,14 +77,16 @@ void OnTimer()
 {
    datetime now = TimeCurrent();
 
-   // Repair coordination has priority over routine traffic.  A blocked completed-M1
-   // upload must never prevent the bridge from polling an already-active repair job.
-   // The repair endpoint is also exempt from the shared transport backoff below.
-   if(RefreshRepairRequest())
-      return;
-
+   // Heartbeat is independent control-plane traffic and must always run before
+   // potentially long history/repair work. A repair must never make a healthy
+   // terminal appear disconnected or reconnecting.
    if(g_last_heartbeat == 0 || now - g_last_heartbeat >= InpHeartbeatSeconds)
       SendHeartbeat();
+
+   // Process at most one active repair/history command per timer cycle. Routine
+   // quote and completed-M1 traffic is deferred while that command is active.
+   if(RefreshRepairRequest())
+      return;
 
    if(g_last_selection_refresh == 0 || now - g_last_selection_refresh >= InpSelectionRefreshSeconds)
       RefreshServerSelection();
@@ -605,6 +607,11 @@ bool SendCandlesForDateRange(string symbol, ENUM_TIMEFRAMES timeframe, string in
    int chunk_count = (copied + upload_chunk_size - 1) / upload_chunk_size;
    for(int chunk_index = 0; chunk_index < chunk_count; chunk_index++)
    {
+      // Keep provider liveness independent from long bulk uploads.
+      datetime heartbeat_now = TimeCurrent();
+      if(g_last_heartbeat == 0 || heartbeat_now - g_last_heartbeat >= InpHeartbeatSeconds)
+         SendHeartbeat();
+
       int chunk_start = chunk_index * upload_chunk_size;
       int chunk_end = MathMin(copied, chunk_start + upload_chunk_size);
       string items = "";

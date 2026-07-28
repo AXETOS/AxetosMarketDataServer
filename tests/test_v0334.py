@@ -100,4 +100,4 @@ def test_healthy_existing_terminal_is_reused_without_restart():
 
 
 def test_v0334_release_version():
-    assert __version__ == "0.64.0"
+    assert __version__ == "0.64.1"

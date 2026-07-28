@@ -2,6 +2,12 @@
 
 A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
 
+## Version 0.64.1
+
+### Repair keeps heartbeat live
+
+Bridge v1.34 sends heartbeat before polling or executing any repair/history command and refreshes heartbeat between bulk upload chunks. Starting **Repair last 24h (M1)** or a full-history download no longer makes a healthy MT5 provider appear `Reconnecting`; repair and provider liveness are independent.
+
 ## Version 0.64.0
 
 This release deliberately simplifies the MT5 runtime. Ticks are used only for current-price/feed status. The bridge requests the previous two completed official M1 candles every minute and never builds or stores M1 from ticks or heartbeat observations. Full history uses a fixed chronological plan with no discovery tree: M1 month-by-month, H1 year-by-year, and D1 across the ten-year window. MT5-unavailable ranges are logged and skipped.

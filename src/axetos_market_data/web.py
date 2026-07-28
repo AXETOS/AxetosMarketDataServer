@@ -593,6 +593,14 @@ def create_app(
             or str(context.get("phase")) == "recent_m1_download"
         ) and str(context.get("timeframe")) == "1m"
         replace_flatline = False
+        removed_off_minute = 0
+        if replace_all and request.chunk_index == 1 and context is not None:
+            removed_off_minute = store.delete_off_minute_candles(
+                request.provider_key,
+                str(context.get("instrument")),
+                context["from_utc"],
+                context["to_utc"],
+            )
         try:
             stored = bridge.candles(
                 request, replace_flatline=replace_flatline, replace_all=replace_all,
@@ -607,6 +615,7 @@ def create_app(
             "received": received,
             "stored": stored,
             "skipped": skipped,
+            "removedOffMinute": removed_off_minute,
         }
 
     @app.get("/api/market-data/mt5/discovered-instruments")

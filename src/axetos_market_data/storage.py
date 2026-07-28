@@ -540,6 +540,42 @@ class MarketDataStore:
                 changed += 1
         return changed
 
+    def delete_off_minute_candles(
+        self, provider: str, instrument: str, start: datetime, end: datetime,
+    ) -> int:
+        """Delete malformed M1 rows that are not aligned to an exact minute.
+
+        Official MT5 M1 refreshes replace exact provider timestamps. Provisional rows
+        created at second or microsecond offsets would otherwise survive beside the
+        official candle and appear as duplicate/spike candles in chart reads.
+        """
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT open_time_utc FROM candles
+                   WHERE provider=? AND instrument=? AND timeframe='1m'
+                     AND open_time_utc>=? AND open_time_utc<=?""",
+                (provider, instrument, _iso(start), _iso(end)),
+            ).fetchall()
+            malformed: list[str] = []
+            for row in rows:
+                raw = str(row[0])
+                observed = datetime.fromisoformat(raw)
+                if observed.second != 0 or observed.microsecond != 0:
+                    malformed.append(raw)
+            for open_time in malformed:
+                key = (provider, instrument, '1m', open_time)
+                connection.execute(
+                    """DELETE FROM candle_provenance
+                       WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc=?""",
+                    key,
+                )
+                connection.execute(
+                    """DELETE FROM candles
+                       WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc=?""",
+                    key,
+                )
+        return len(malformed)
+
     def force_replace_candles(self, candles: Iterable[Candle]) -> int:
         """Authoritatively upsert every supplied candle and count every accepted row."""
         values = list(candles)

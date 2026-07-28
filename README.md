@@ -1,4 +1,4 @@
-## Version 0.61.6
+## Version 0.61.7
 
 Version 0.61.6 removes the recent-M1 verification gate. During the manual or automatic 24-hour refresh, every M1 candle returned by MT5 is force-upserted by exact provider/instrument/timestamp. Existing rows at returned timestamps are overwritten, missing rows are inserted, and timestamps not returned by MT5 are left untouched. No count, alignment, chart-path, quality, or provenance check can reject the official write. Instruments are still processed sequentially; after each timestamp upsert completes, higher intervals are rebuilt and the coordinator advances. A derived-timeframe rebuild warning is logged without undoing or rejecting the authoritative M1 replacement.
 

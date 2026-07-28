@@ -40,6 +40,7 @@ from .benchmark_jobs import BenchmarkJobManager
 from .bridge import (Mt5BridgeService, BridgeHeartbeatRequest, BridgeInstrumentsRequest, BridgeTicksRequest, BridgeQuotesRequest, BridgeCandlesRequest, InstrumentSelectionRequest)
 from .full_history import FullHistoryBackfillManager, PlannedRange
 from .history_worker import HistoryIngestionProcess
+from .repair_worker import CandleRepairProcess
 from .hierarchical_repair import HierarchicalCandleRepair
 
 
@@ -186,6 +187,7 @@ def create_app(
     secret_store = SecretStore(Path(configuration_path).parent / "mt5_secrets.json")
     supervisor = ProviderSupervisor(config_store, store, secret_store)
     history_process = HistoryIngestionProcess(store.database_target)
+    repair_process = CandleRepairProcess(store.database_target)
     scheduler = MaintenanceScheduler(store)
     backups = BackupService(database_path, configuration_path)
     benchmark_jobs = BenchmarkJobManager()
@@ -251,18 +253,20 @@ def create_app(
                 "status": "COMPLETE",
             }
             try:
-                repair = HierarchicalCandleRepair(store)
-
-                def stage_event(category: str, item_instrument: str, timeframe: str, stage: dict[str, object]) -> None:
+                result = repair_process.run(provider, [instrument])
+                for stage in result.get("stages", []):
+                    stage_details = dict(stage.get("details", {}))
+                    category = str(stage.get("category", "repair.stage_completed"))
                     events.record(
-                        "warning" if int(stage.get("errors", 0)) else "info",
+                        "warning" if int(stage_details.get("errors", 0)) else "info",
                         category,
                         "Instrument candle repair stage started" if category.endswith("started") else "Instrument candle repair stage completed",
-                        provider=provider, instrument=item_instrument,
-                        details={"job_id": job_id, "target_timeframe": timeframe, **stage},
+                        provider=provider, instrument=str(stage.get("instrument", instrument)),
+                        details={"job_id": job_id, "target_timeframe": str(stage.get("timeframe", "")),
+                                 "repair_worker_pid": result.get("worker_pid"), **stage_details},
                     )
-
-                completion["repair_summary"] = repair.run(provider, [instrument], on_stage=stage_event)
+                completion["repair_summary"] = result.get("summary", {})
+                completion["repair_worker_pid"] = result.get("worker_pid")
                 completion["higher_timeframes_rebuilt"] = True
             except Exception as exc:
                 # The authoritative M1 write already succeeded. Do not reject or roll it
@@ -284,18 +288,6 @@ def create_app(
 
     def repair_full_history(provider: str, job_id: str, instruments: list[str]) -> None:
         def run() -> None:
-            repair = HierarchicalCandleRepair(store)
-
-            def stage_event(category: str, instrument: str, timeframe: str, details: dict[str, object]) -> None:
-                events.record(
-                    "warning" if int(details.get("errors", 0)) else "info",
-                    category,
-                    "Candle repair stage started" if category.endswith("started") else "Candle repair stage completed",
-                    provider=provider,
-                    instrument=instrument,
-                    details={"target_timeframe": timeframe, **details},
-                )
-
             context = full_history.job_context(provider, job_id) or {}
             workflow = str(context.get("workflow", "full"))
             repair_pass = int(context.get("repair_pass", 0))
@@ -356,7 +348,20 @@ def create_app(
                 return
 
             try:
-                summary = repair.run(provider, instruments, on_stage=stage_event)
+                repair_result = repair_process.run(provider, instruments)
+                for stage in repair_result.get("stages", []):
+                    stage_details = dict(stage.get("details", {}))
+                    category = str(stage.get("category", "repair.stage_completed"))
+                    events.record(
+                        "warning" if int(stage_details.get("errors", 0)) else "info",
+                        category,
+                        "Candle repair stage started" if category.endswith("started") else "Candle repair stage completed",
+                        provider=provider, instrument=str(stage.get("instrument", "")),
+                        details={"target_timeframe": str(stage.get("timeframe", "")),
+                                 "repair_worker_pid": repair_result.get("worker_pid"), **stage_details},
+                    )
+                summary = dict(repair_result.get("summary", {}))
+                summary["repair_worker_pid"] = repair_result.get("worker_pid")
             except Exception as exc:  # keep the coordinator moving and expose the failure
                 full_history.complete_repair(provider, job_id, {}, error=str(exc))
                 return
@@ -411,12 +416,14 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         history_process.start()
+        repair_process.start()
         supervisor.load()
         scheduler.start()
         yield
         scheduler.stop()
         supervisor.shutdown()
         bridge.shutdown()
+        repair_process.shutdown()
         history_process.shutdown()
 
     security = SecuritySettings.from_environment()
@@ -501,6 +508,7 @@ def create_app(
     calendar = MarketCalendar()
     app.state.bridge = bridge
     app.state.history_process = history_process
+    app.state.repair_process = repair_process
     app.state.quality = quality
     app.state.events = events
     app.state.calendar = calendar
@@ -588,7 +596,7 @@ def create_app(
 
     @app.get("/api/market-data/mt5/bridge/status")
     def bridge_status() -> dict[str, object]:
-        return {**store.bridge_status(), "queue": bridge.view(), "history_process": history_process.view()}
+        return {**store.bridge_status(), "queue": bridge.view(), "history_process": history_process.view(), "repair_process": repair_process.view()}
 
     @app.post("/api/market-data/ingest/mt5/heartbeat")
     def bridge_heartbeat(request: BridgeHeartbeatRequest) -> dict[str, object]:

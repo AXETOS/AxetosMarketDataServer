@@ -1,4 +1,9 @@
-## Version 0.61.9
+
+## v0.62.0 dedicated repair process
+
+Bottom-up candle aggregation now runs in a dedicated operating-system process with its own database connection. The API process only accepts MT5 traffic and coordinates jobs; it never executes H1/D1/W1/MN1 rebuilds. Historical writes remain in the separate history-ingestion process. This keeps heartbeat and completed-M1 endpoints responsive while repair is active.
+
+## Version 0.62.0
 
 ### MT5 bridge compile fix
 

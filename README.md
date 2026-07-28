@@ -1,5 +1,9 @@
 # Axetos Market Data Server
 
+## Version 0.61.2
+
+Version 0.61.2 strengthens recent M1 recovery. The 24-hour verifier now treats both missing and flatline one-minute candles as suspicious, merges adjacent suspicious minutes into exact MT5 requests, inserts missing candles, and replaces an existing flatline only when MT5 returns a demonstrably better non-flat candle. Existing non-flat candles and provider-confirmed equal flatlines are retained. Final completion occurs only after the second timestamp/value verification pass; remaining suspicious ranges are explicitly marked bad so the coordinator always advances.
+
 A standalone Python market-data server for collecting financial market ticks, building OHLC candles, aggregating timeframes, validating historical data, and storing the result in SQLite or PostgreSQL.
 
 This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders. It has no trading accounts, positions, balances, P&L, strategies, chart renderer, or client trading interface.

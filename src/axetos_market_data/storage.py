@@ -508,6 +508,47 @@ class MarketDataStore:
             written = connection.total_changes - before
         return written
 
+    def insert_missing_or_replace_flatline(self, candles: Iterable[Candle]) -> int:
+        """Insert missing rows and replace only flatline rows with better provider data.
+
+        A provider-confirmed flatline is retained. Existing non-flat candles are never
+        overwritten by this recovery path.
+        """
+        values = list(candles)
+        if not values:
+            return 0
+        changed = 0
+        with self.connect() as connection:
+            for candle in values:
+                key = (candle.provider, candle.instrument, candle.timeframe, _iso(candle.open_time))
+                row = connection.execute(
+                    """SELECT open,high,low,close FROM candles
+                       WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc=?""",
+                    key,
+                ).fetchone()
+                incoming_flat = candle.open == candle.high == candle.low == candle.close
+                if row is None:
+                    connection.execute(
+                        """INSERT INTO candles(provider,instrument,timeframe,open_time_utc,open,high,low,close,tick_count,volume,complete)
+                           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                        (*key, str(candle.open), str(candle.high), str(candle.low), str(candle.close),
+                         candle.tick_count, None if candle.volume is None else str(candle.volume), int(candle.complete)),
+                    )
+                    changed += 1
+                    continue
+                existing = tuple(Decimal(str(value)) for value in row)
+                existing_flat = existing[0] == existing[1] == existing[2] == existing[3]
+                if not existing_flat or incoming_flat:
+                    continue
+                connection.execute(
+                    """UPDATE candles SET open=?,high=?,low=?,close=?,tick_count=?,volume=?,complete=?
+                       WHERE provider=? AND instrument=? AND timeframe=? AND open_time_utc=?""",
+                    (str(candle.open), str(candle.high), str(candle.low), str(candle.close),
+                     candle.tick_count, None if candle.volume is None else str(candle.volume), int(candle.complete), *key),
+                )
+                changed += 1
+        return changed
+
     def candle_count_range(self, provider: str, instrument: str, timeframe: str, start: datetime, end: datetime) -> int:
         with self.connect() as connection:
             row = connection.execute(

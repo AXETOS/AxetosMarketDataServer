@@ -234,12 +234,18 @@ class Mt5BridgeService:
         # writer pauses as soon as even a small live backlog appears.
         return self._queue.qsize() <= 2
 
-    def _insert_historical_low_priority(self, candles: list[Candle]) -> int:
+    def _insert_historical_low_priority(
+        self, candles: list[Candle], *, replace_flatline: bool = False,
+    ) -> int:
         """Submit targeted BACKFILL storage outside the live queue process."""
         if self._history_process is None:
             # Compatibility fallback for direct service construction in unit tests.
-            return self.store.insert_candles_missing(candles)
-        return self._history_process.insert_missing(candles)
+            return (
+                self.store.insert_missing_or_replace_flatline(candles)
+                if replace_flatline
+                else self.store.insert_candles_missing(candles)
+            )
+        return self._history_process.insert_missing(candles, replace_flatline=replace_flatline)
 
     def quotes(self, request: BridgeQuotesRequest) -> int:
         """Persist provider-scoped quote snapshots for display only.
@@ -294,7 +300,7 @@ class Mt5BridgeService:
                 self._observation_sink(tick, True)
             return True
 
-    def candles(self, request: BridgeCandlesRequest) -> int:
+    def candles(self, request: BridgeCandlesRequest, *, replace_flatline: bool = False) -> int:
         """Import provider-confirmed historical bars without overwriting existing rows.
 
         Live minute candles are built exclusively from ticks. Historical M1 bars use the
@@ -319,7 +325,10 @@ class Mt5BridgeService:
             except ValueError:
                 continue
         values = self._sanitize_historical_minutes(incoming) if interval == "1m" else sorted(incoming, key=lambda item: item.open_time)
-        written = self._insert_historical_low_priority(values) if request.request_id else self.store.upsert_candles(values)
+        written = (
+            self._insert_historical_low_priority(values, replace_flatline=replace_flatline)
+            if request.request_id else self.store.upsert_candles(values)
+        )
         if values and not request.request_id:
             from .aggregation import CANONICAL_DERIVED_TIMEFRAMES, CandleAggregator
             aggregator = CandleAggregator(self.store)

@@ -72,7 +72,12 @@ def _history_worker_main(
         job_id = str(command["job_id"])
         try:
             candles = [_deserialize_candle(item) for item in command["candles"]]
-            stored = store.insert_candles_missing(candles)
+            mode = str(command.get("mode", "missing_only"))
+            stored = (
+                store.insert_missing_or_replace_flatline(candles)
+                if mode == "replace_flatline"
+                else store.insert_candles_missing(candles)
+            )
             result_queue.put({
                 "job_id": job_id,
                 "ok": True,
@@ -150,7 +155,10 @@ class HistoryIngestionProcess:
                 event.set()
             self._waiters.clear()
 
-    def insert_missing(self, candles: list[Candle], *, timeout_seconds: float = 30.0) -> int:
+    def insert_missing(
+        self, candles: list[Candle], *, timeout_seconds: float = 30.0,
+        replace_flatline: bool = False,
+    ) -> int:
         if not candles:
             return 0
         self.start()
@@ -159,7 +167,11 @@ class HistoryIngestionProcess:
         payload: dict[str, object] = {}
         with self._lock:
             self._waiters[job_id] = (event, payload)
-        command = {"job_id": job_id, "candles": [_serialize_candle(item) for item in candles]}
+        command = {
+            "job_id": job_id,
+            "candles": [_serialize_candle(item) for item in candles],
+            "mode": "replace_flatline" if replace_flatline else "missing_only",
+        }
         try:
             self._commands.put(command, timeout=2.0)
             self.stats.queued_jobs += 1

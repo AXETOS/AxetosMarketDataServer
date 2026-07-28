@@ -202,20 +202,32 @@ def create_app(
         market_calendar = MarketCalendar()
         result: dict[str, list[PlannedRange]] = {}
         for instrument in instruments:
-            existing = set(store.read_candle_times(provider, instrument, "1m", start, end + timedelta(minutes=1)))
+            candles = store.read_candles_range(
+                instrument, "1m", start, end + timedelta(minutes=1), provider
+            )
+            existing = {candle.open_time: candle for candle in candles}
             ranges: list[PlannedRange] = []
-            gap_start: datetime | None = None
+            suspicious_start: datetime | None = None
             cursor = start
             while cursor <= end:
-                missing = market_calendar.is_expected_open(instrument, cursor) and cursor not in existing
-                if missing and gap_start is None:
-                    gap_start = cursor
-                elif not missing and gap_start is not None:
-                    ranges.append(PlannedRange("1m", gap_start, cursor - timedelta(minutes=1), 4))
-                    gap_start = None
+                candle = existing.get(cursor)
+                flatline = bool(
+                    candle is not None
+                    and candle.open == candle.high == candle.low == candle.close
+                )
+                suspicious = market_calendar.is_expected_open(instrument, cursor) and (
+                    candle is None or flatline
+                )
+                if suspicious and suspicious_start is None:
+                    suspicious_start = cursor
+                elif not suspicious and suspicious_start is not None:
+                    ranges.append(PlannedRange(
+                        "1m", suspicious_start, cursor - timedelta(minutes=1), 4
+                    ))
+                    suspicious_start = None
                 cursor += timedelta(minutes=1)
-            if gap_start is not None:
-                ranges.append(PlannedRange("1m", gap_start, end, 4))
+            if suspicious_start is not None:
+                ranges.append(PlannedRange("1m", suspicious_start, end, 4))
             result[instrument] = ranges
         return result
 
@@ -259,7 +271,7 @@ def create_app(
             events.record(
                 "warning" if gap_count else "info",
                 "repair.recent_m1_scan_completed",
-                "Last-24-hours M1 gap scan completed",
+                "Last-24-hours M1 missing/flatline verification completed",
                 provider=provider,
                 details={"job_id": job_id, "workflow": workflow, "repair_pass": repair_pass,
                          "instruments": len(instruments), "missing_ranges": gap_count},
@@ -273,7 +285,7 @@ def create_app(
             unresolved = 0
             if gap_count:
                 unresolved = mark_recent_m1_unresolved_bad(
-                    provider, ranges, "recent_m1_unresolved_after_targeted_repair"
+                    provider, ranges, "recent_m1_unresolved_or_verified_flatline_after_targeted_repair"
                 )
                 events.record(
                     "warning", "repair.recent_m1_bad_ranges",
@@ -528,8 +540,13 @@ def create_app(
     @app.post("/api/market-data/ingest/mt5/candles")
     def bridge_candles(request: BridgeCandlesRequest) -> dict[str, object]:
         received = len(request.candles)
+        context = full_history.request_context(request.provider_key, request.request_id)
+        replace_flatline = bool(context) and (
+            str(context.get("workflow")) == "recent_m1"
+            or str(context.get("phase")) == "recent_m1_download"
+        ) and str(context.get("timeframe")) == "1m"
         try:
-            stored = bridge.candles(request)
+            stored = bridge.candles(request, replace_flatline=replace_flatline)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         skipped = max(0, received - stored)

@@ -220,6 +220,24 @@ class FullHistoryBackfillManager:
                 return None
             return {"workflow": job.workflow, "repair_pass": job.repair_pass, "status": job.status, "phase": job.phase}
 
+    def request_context(self, provider_key: str, request_id: str | None) -> dict[str, object] | None:
+        """Return immutable context for the provider's active MT5 history request."""
+        if not request_id:
+            return None
+        with self._lock:
+            job, item = self._active_item(provider_key, request_id)
+            if job is None or item is None:
+                return None
+            return {
+                "workflow": job.workflow,
+                "phase": job.phase,
+                "repair_pass": job.repair_pass,
+                "instrument": item.instrument,
+                "timeframe": item.timeframe,
+                "from_utc": item.cursor_start,
+                "to_utc": item.current_end,
+            }
+
     def next_request(self, provider_key: str) -> str:
         with self._lock:
             job = self._active_job(provider_key)

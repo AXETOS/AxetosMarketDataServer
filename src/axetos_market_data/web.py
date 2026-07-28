@@ -222,7 +222,13 @@ def create_app(
     def verify_recent_m1_instrument(
         provider: str, instrument: str, details: dict[str, object],
     ) -> None:
-        """Verify and rebuild one authoritative recent-M1 instrument before advancing."""
+        """Rebuild higher intervals after an authoritative timestamp upsert.
+
+        The recent-M1 refresh intentionally performs no post-write verification gate.
+        Every M1 timestamp returned by MT5 has already been force-upserted by the
+        history worker. After that write completes, rebuild this instrument and
+        immediately allow the coordinator to continue.
+        """
         workflow = str(details.get("workflow", "full"))
         phase = str(details.get("phase", "download"))
         repair_pass = int(details.get("repair_pass", 0))
@@ -231,41 +237,20 @@ def create_app(
 
         if not is_recent_refresh:
             full_history.instrument_verified(
-                provider, job_id, instrument, {"verification": "not_required_for_history_download"}
+                provider, job_id, instrument, {"refresh": "not_required_for_history_download"}
             )
             return
 
         def run() -> None:
-            started = datetime.now(UTC)
-            start = details.get("from_utc")
-            end = details.get("to_utc")
-            expected = int(details.get("candles_received", 0))
-            verification: dict[str, object] = {
-                "workflow": workflow, "repair_pass": repair_pass,
-                "expected_provider_rows": expected,
-                "verification_started_at": started.isoformat(),
+            completion: dict[str, object] = {
+                "workflow": workflow,
+                "repair_pass": repair_pass,
+                "bars_returned": int(details.get("candles_received", 0)),
+                "timestamps_upserted": int(details.get("candles_stored", 0)),
+                "timestamps_untouched": int(details.get("candles_skipped", 0)),
+                "status": "COMPLETE",
             }
             try:
-                if not isinstance(start, datetime) or not isinstance(end, datetime):
-                    raise RuntimeError("Recent M1 verification window is unavailable")
-
-                persisted = store.read_candles(
-                    instrument, "1m", limit=5000, provider=provider,
-                    from_utc=start, to_utc=end,
-                )
-                aligned = sum(
-                    1 for candle in persisted
-                    if candle.open_time.second == 0 and candle.open_time.microsecond == 0
-                )
-                if len(persisted) != expected:
-                    raise RuntimeError(
-                        f"Authoritative M1 verification count mismatch: expected={expected}, persisted={len(persisted)}"
-                    )
-                if aligned != len(persisted):
-                    raise RuntimeError(
-                        f"Authoritative M1 verification found {len(persisted) - aligned} misaligned rows"
-                    )
-
                 repair = HierarchicalCandleRepair(store)
 
                 def stage_event(category: str, item_instrument: str, timeframe: str, stage: dict[str, object]) -> None:
@@ -277,41 +262,24 @@ def create_app(
                         details={"job_id": job_id, "target_timeframe": timeframe, **stage},
                     )
 
-                repair_summary = repair.run(provider, [instrument], on_stage=stage_event)
-
-                # The chart API reads directly from this same persistent store. Reload it
-                # after repair so completion proves the chart-facing path sees the refresh.
-                chart_rows = store.read_candles(
-                    instrument, "1m", limit=5000, provider=provider,
-                    from_utc=start, to_utc=end,
-                )
-                if len(chart_rows) != expected:
-                    raise RuntimeError(
-                        f"Chart-path verification count mismatch: expected={expected}, chart_rows={len(chart_rows)}"
-                    )
-
-                verification.update({
-                    "window_start": start.isoformat(), "window_end": end.isoformat(),
-                    "database_rows_verified": len(persisted),
-                    "chart_rows_verified": len(chart_rows),
-                    "aligned_rows_verified": aligned,
-                    "higher_timeframes_rebuilt": True,
-                    "repair_summary": repair_summary,
-                    "verification_completed_at": datetime.now(UTC).isoformat(),
-                    "status": "COMPLETE",
-                })
-                full_history.instrument_verified(provider, job_id, instrument, verification)
+                completion["repair_summary"] = repair.run(provider, [instrument], on_stage=stage_event)
+                completion["higher_timeframes_rebuilt"] = True
             except Exception as exc:
-                verification.update({
-                    "status": "BAD", "error": str(exc),
-                    "verification_completed_at": datetime.now(UTC).isoformat(),
-                })
-                full_history.instrument_verified(
-                    provider, job_id, instrument, verification, error=str(exc)
+                # The authoritative M1 write already succeeded. Do not reject or roll it
+                # back because a later derived-timeframe rebuild had a problem. Record
+                # the rebuild error and continue to the next instrument.
+                completion["higher_timeframes_rebuilt"] = False
+                completion["repair_error"] = str(exc)
+                events.record(
+                    "warning", "repair.instrument_rebuild_warning",
+                    "Official M1 timestamps were replaced, but higher-timeframe rebuild reported an error",
+                    provider=provider, instrument=instrument,
+                    details={"job_id": job_id, **completion},
                 )
+            full_history.instrument_verified(provider, job_id, instrument, completion)
 
         threading.Thread(
-            target=run, name=f"recent-m1-verify-{provider}-{instrument}", daemon=True,
+            target=run, name=f"recent-m1-rebuild-{provider}-{instrument}", daemon=True,
         ).start()
 
     def repair_full_history(provider: str, job_id: str, instruments: list[str]) -> None:
@@ -625,16 +593,10 @@ def create_app(
             or str(context.get("phase")) == "recent_m1_download"
         ) and str(context.get("timeframe")) == "1m"
         replace_flatline = False
-        replace_window = None
-        if replace_all and request.chunk_index == 0 and context is not None:
-            window_start = context.get("from_utc")
-            window_end = context.get("to_utc")
-            if isinstance(window_start, datetime) and isinstance(window_end, datetime):
-                replace_window = (window_start, window_end)
         try:
             stored = bridge.candles(
                 request, replace_flatline=replace_flatline, replace_all=replace_all,
-                replace_window=replace_window,
+                replace_window=None,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc

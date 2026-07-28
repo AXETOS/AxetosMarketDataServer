@@ -34,7 +34,7 @@ def test_authoritative_window_removes_stale_and_misaligned_minutes(tmp_path: Pat
     assert saved[0].open == Decimal("1.1000")
 
 
-def test_history_worker_first_chunk_atomically_clears_official_window(tmp_path: Path) -> None:
+def test_history_worker_force_replaces_each_returned_timestamp(tmp_path: Path) -> None:
     target = tmp_path / "market.sqlite"
     store = MarketDataStore(target)
     store.initialize()
@@ -47,7 +47,6 @@ def test_history_worker_first_chunk_atomically_clears_official_window(tmp_path: 
         assert worker.insert_missing(
             [candle(start, "1.1"), candle(start + timedelta(minutes=1), "1.2")],
             replace_all=True,
-            replace_window=(start, end),
         ) == 2
         assert worker.insert_missing(
             [candle(start + timedelta(minutes=2), "1.3")], replace_all=True
@@ -57,7 +56,8 @@ def test_history_worker_first_chunk_atomically_clears_official_window(tmp_path: 
 
     saved = store.read_candles_range("EUR/USD", "1m", start, end, "ICMarkets.MT5")
     assert [item.open_time for item in saved] == [
-        start, start + timedelta(minutes=1), start + timedelta(minutes=2)
+        start, start + timedelta(seconds=30), start + timedelta(minutes=1),
+        start + timedelta(minutes=2)
     ]
 
 

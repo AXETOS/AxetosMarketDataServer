@@ -88,12 +88,11 @@ class FullHistoryJob:
 
 
 class FullHistoryBackfillManager:
-    """Hierarchical planning-first MT5 history coordinator.
+    """Simple fixed-plan MT5 source-history coordinator.
 
-    The manager first discovers ten-year provider coverage, recursively narrows only
-    incomplete ranges, stores the complete missing-range plan, and only then issues
-    BACKFILL commands. Unavailable ranges are marked bad and skipped so a provider
-    can never freeze the job indefinitely.
+    Each instrument downloads official M1 month-by-month, H1 year-by-year, and D1
+    across the ten-year window. Unavailable ranges are marked bad and skipped.
+    Exactly one provider history request remains in flight at a time.
     """
 
     _DISCOVERY_TIMEFRAMES = ("1m", "1h", "1d")
@@ -136,16 +135,28 @@ class FullHistoryBackfillManager:
             existing_id = self._provider_job.get(provider_key)
             if existing_id and self._jobs[existing_id].status in {"running", "repairing"}:
                 raise RuntimeError("A full-history backfill is already running for this provider")
+            now = self._now_factory().astimezone(UTC).replace(second=0, microsecond=0)
+            instruments: list[InstrumentProgress] = []
+            for symbol, instrument in symbols:
+                item = InstrumentProgress(symbol, instrument, provider_key)
+                item.phase = "download"
+                item.scan_phase = "download"
+                item.discovery_complete = True
+                item.status = "queued"
+                item.missing_ranges = self._simple_source_ranges(now)
+                instruments.append(item)
             job = FullHistoryJob(
                 job_id=uuid.uuid4().hex,
                 provider_key=provider_key,
-                created_at=self._now_factory(),
-                instruments=[InstrumentProgress(symbol, instrument, provider_key) for symbol, instrument in symbols],
+                created_at=now,
+                phase="download",
+                instruments=instruments,
             )
             self._jobs[job.job_id] = job
             self._provider_job[provider_key] = job.job_id
-            self._emit("backfill.discovery_started", "Ten-year history discovery started", provider_key,
-                       {"job_id": job.job_id, "instruments": len(symbols)})
+            self._emit("backfill.download_started", "Simple ten-year source download started", provider_key,
+                       {"job_id": job.job_id, "instruments": len(symbols),
+                        "timeframes": ["1m", "1h", "1d"]})
             return self._view(job)
 
     def start_targeted(
@@ -547,6 +558,36 @@ class FullHistoryBackfillManager:
             else:
                 item.phase = "completed"
                 item.status = "completed"
+
+    @staticmethod
+    def _simple_source_ranges(now: datetime) -> list[PlannedRange]:
+        """Fixed chronological source download plan with no discovery tree.
+
+        M1 is requested month-by-month, H1 year-by-year, and D1 in one ten-year
+        request. MT5 returns whatever it has; unavailable ranges are skipped.
+        """
+        start = now - timedelta(days=3650)
+        ranges: list[PlannedRange] = []
+
+        cursor = start
+        while cursor < now:
+            boundary = (cursor.replace(day=1) + timedelta(days=32)).replace(day=1)
+            end = min(now, boundary)
+            ranges.append(PlannedRange("1m", cursor, end, 0))
+            cursor = end
+
+        cursor = start
+        while cursor < now:
+            try:
+                boundary = cursor.replace(year=cursor.year + 1)
+            except ValueError:
+                boundary = cursor.replace(month=2, day=28, year=cursor.year + 1)
+            end = min(now, boundary)
+            ranges.append(PlannedRange("1h", cursor, end, 0))
+            cursor = end
+
+        ranges.append(PlannedRange("1d", start, now, 0))
+        return ranges
 
     def _configure_discovery(self, item: InstrumentProgress) -> None:
         timeframe = self._DISCOVERY_TIMEFRAMES[item.discovery_index]

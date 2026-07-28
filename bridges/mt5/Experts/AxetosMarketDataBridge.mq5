@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "1.32"
+#property version   "1.33"
 #property strict
 #property description "Provider-agnostic MT5 market-data bridge for Axetos Market Data Server."
 
@@ -56,7 +56,7 @@ int OnInit()
    EventSetTimer(1);
    string transport_response = "";
    if(GetText("/api/live", transport_response))
-      PrintFormat("Axetos MT5 Bridge v1.32: transport self-test passed; server=%s", InpServerUrl);
+      PrintFormat("Axetos MT5 Bridge v1.33: transport self-test passed; server=%s", InpServerUrl);
    SendHeartbeat();
    if(InpDiscoverAllSymbols)
       SendDiscoveredInstrumentCatalogue();
@@ -453,47 +453,45 @@ void SendPreviousCompletedM1()
       return;
 
    datetime current_minute = (datetime)((long)now - ((long)now % 60));
-   datetime completed_open = current_minute - 60;
-   datetime completed_end = completed_open + 59;
+   datetime newest_completed = current_minute - 60;
 
    for(int i = 0; i < ArraySize(g_symbols); i++)
    {
-      if(i < ArraySize(g_last_m1_bar) && g_last_m1_bar[i] == completed_open)
+      if(i < ArraySize(g_last_m1_bar) && g_last_m1_bar[i] == newest_completed)
          continue;
 
       string symbol = g_symbols[i];
       MqlRates rates[];
       ArraySetAsSeries(rates, false);
       ResetLastError();
-      int copied = CopyRates(symbol, PERIOD_M1, completed_open, completed_end, rates);
-      int copy_error = GetLastError();
+      // Always overlap by one minute. This makes normal live collection repair a
+      // single missed poll without any separate gap state machine.
+      int copied = CopyRates(symbol, PERIOD_M1, newest_completed - 60, newest_completed + 59, rates);
       if(copied <= 0)
       {
-         // Do not manufacture a candle. A later 24-hour refresh will recover a
-         // minute that MT5 cannot return immediately after its boundary.
          ResetLastError();
          continue;
       }
 
       int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-      MqlRates candle = rates[copied - 1];
+      string items = "";
+      for(int r = 0; r < copied; r++)
+      {
+         if(items != "") items += ",";
+         items += StringFormat(
+            "{\"timeUtc\":\"%s\",\"open\":%s,\"high\":%s,\"low\":%s,\"close\":%s,\"tickVolume\":%I64d}",
+            IsoUtc(CandleTimeToUtc(rates[r].time, "1m")),
+            DoubleToString(rates[r].open, digits), DoubleToString(rates[r].high, digits),
+            DoubleToString(rates[r].low, digits), DoubleToString(rates[r].close, digits), rates[r].tick_volume);
+      }
       string json = StringFormat(
-         "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"1m\",\"authoritative\":true,\"candles\":[{\"timeUtc\":\"%s\",\"open\":%s,\"high\":%s,\"low\":%s,\"close\":%s,\"tickVolume\":%I64d}]}",
+         "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"1m\",\"authoritative\":true,\"candles\":[%s]}",
          JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), JsonEscape(symbol),
-         JsonEscape(CanonicalSymbol(symbol)), IsoUtc(CandleTimeToUtc(candle.time, "1m")),
-         DoubleToString(candle.open, digits), DoubleToString(candle.high, digits),
-         DoubleToString(candle.low, digits), DoubleToString(candle.close, digits), candle.tick_volume);
+         JsonEscape(CanonicalSymbol(symbol)), items);
 
       string response = "";
-      if(PostJsonText("/api/market-data/ingest/mt5/candles", json, response))
-      {
-         if(i < ArraySize(g_last_m1_bar))
-            g_last_m1_bar[i] = completed_open;
-      }
-      else if(copy_error != 0)
-      {
-         ResetLastError();
-      }
+      if(PostJsonText("/api/market-data/ingest/mt5/candles", json, response) && i < ArraySize(g_last_m1_bar))
+         g_last_m1_bar[i] = newest_completed;
    }
 }
 

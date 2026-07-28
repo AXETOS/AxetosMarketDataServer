@@ -62,6 +62,6 @@ def test_secret_store_atomic_write_keeps_private_permissions(
 
 def test_v035_release_metadata() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert __version__ == "0.63.0"
-    assert 'version = "0.63.0"' in (root / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.63.0" in (root / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.64.0"
+    assert 'version = "0.64.0"' in (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.64.0" in (root / "README.md").read_text(encoding="utf-8")

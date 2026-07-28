@@ -1,8 +1,14 @@
 # Axetos Market Data Server
 
-A standalone Python market-data server for collecting official MT5 candles, maintaining live feed state, repairing historical coverage, aggregating higher timeframes, and storing market data in SQLite or PostgreSQL.
+A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
 
-This repository contains **market-data infrastructure only**. It does not place, simulate, validate, or manage orders.
+## Version 0.64.0
+
+This release deliberately simplifies the MT5 runtime. Ticks are used only for current-price/feed status. The bridge requests the previous two completed official M1 candles every minute and never builds or stores M1 from ticks or heartbeat observations. Full history uses a fixed chronological plan with no discovery tree: M1 month-by-month, H1 year-by-year, and D1 across the ten-year window. MT5-unavailable ranges are logged and skipped.
+
+Repeated identical flat M1 candles are compressed in the dedicated history process. Flat minutes remain pending while price is unchanged; when movement resumes, only the final flat minute immediately before the changed candle is stored. This creates one closure/reopen boundary candle without saving an entire weekend of flatlines.
+
+Derived candles are rebuilt deterministically in the dedicated repair process: M1 to M15 and H1, H1 to D1, and D1 to W1 and MN1. After a full download, the server refreshes official M1 for the operation runtime, repeats once for the catch-up runtime, and performs a final recent-minute overlap before completion.
 
 ## Version 0.63.0
 

@@ -39,6 +39,7 @@ class HierarchicalCandleRepair:
     """
 
     STAGES = (
+        ("1m", "15m", 520),
         ("1m", "1h", 500),
         ("1h", "1d", 450),
         ("1d", "1w", 400),

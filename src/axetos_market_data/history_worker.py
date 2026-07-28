@@ -59,6 +59,39 @@ def _deserialize_candle(value: dict[str, Any]) -> Candle:
     )
 
 
+
+
+def _is_flat(candle: Candle) -> bool:
+    return candle.open == candle.high == candle.low == candle.close
+
+
+def _compress_flat_m1(
+    candles: list[Candle], pending: dict[tuple[str, str], Candle],
+) -> list[Candle]:
+    """Collapse repeated identical flat M1 candles across worker jobs.
+
+    A flat minute is held until a later minute changes. Only the last flat minute
+    immediately before that change is persisted, which leaves one closure boundary
+    candle instead of thousands of closed-market flatlines.
+    """
+    output: list[Candle] = []
+    for candle in sorted(candles, key=lambda value: value.open_time):
+        if candle.timeframe != "1m":
+            output.append(candle)
+            continue
+        key = (candle.provider, candle.instrument)
+        held = pending.get(key)
+        if _is_flat(candle):
+            if held is not None and held.close != candle.close:
+                output.append(held)
+            pending[key] = candle
+            continue
+        if held is not None:
+            output.append(held)
+            pending.pop(key, None)
+        output.append(candle)
+    return output
+
 def _history_worker_main(
     database_target: str,
     command_queue: mp.Queue,
@@ -70,6 +103,7 @@ def _history_worker_main(
         signal.signal(signal.SIGINT, signal.SIG_IGN)
     store = MarketDataStore(database_target)
     store.initialize()
+    pending_flat_m1: dict[tuple[str, str], Candle] = {}
     while True:
         try:
             command = command_queue.get()
@@ -79,8 +113,12 @@ def _history_worker_main(
             return
         job_id = str(command["job_id"])
         try:
-            candles = [_deserialize_candle(item) for item in command["candles"]]
+            raw_candles = [_deserialize_candle(item) for item in command["candles"]]
             mode = str(command.get("mode", "missing_only"))
+            candles = (
+                _compress_flat_m1(raw_candles, pending_flat_m1)
+                if mode in {"missing_only", "replace_all"} else raw_candles
+            )
             stored = (
                 store.replace_candle_window(
                     candles, datetime.fromisoformat(str(command["window_start"])),
@@ -103,9 +141,10 @@ def _history_worker_main(
             result_queue.put({
                 "job_id": job_id,
                 "ok": True,
-                "received": len(candles),
+                "received": len(raw_candles),
                 "stored": stored,
-                "skipped": max(0, len(candles) - stored),
+                "skipped": max(0, len(raw_candles) - stored),
+                "flatline_deferred": max(0, len(raw_candles) - len(candles)),
             })
         except BaseException as exc:
             result_queue.put({

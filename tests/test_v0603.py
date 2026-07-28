@@ -11,7 +11,7 @@ def test_history_request_is_delivered_once_until_acknowledged() -> None:
     manager = FullHistoryBackfillManager(lambda *_: 0, now_factory=lambda: now)
     manager.start("ICMarkets.MT5", [("EURUSD", "EUR/USD")])
     first = manager.next_request("ICMarkets.MT5")
-    assert first.startswith("DISCOVER|")
+    assert first.startswith("BACKFILL|")
     assert manager.next_request("ICMarkets.MT5") == ""
 
 
@@ -31,6 +31,6 @@ def test_history_request_redelivers_after_lease_expiry() -> None:
 
 def test_bridge_reports_stored_batch_acknowledgement() -> None:
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "1.32"' in source
+    assert '#property version   "1.33"' in source
     assert "stored/skipped result for %s %s" in source
     assert "server acknowledged" in source

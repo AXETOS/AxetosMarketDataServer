@@ -40,7 +40,7 @@ def test_bridge_source_polls_previous_completed_m1_and_marks_authoritative() -> 
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
     assert "SendPreviousCompletedM1();" in source
     assert "authoritative" in source and "true" in source
-    assert "CopyRates(symbol, PERIOD_M1, completed_open, completed_end" in source
+    assert "CopyRates(symbol, PERIOD_M1, newest_completed - 60, newest_completed + 59" in source
     assert "Live observations are feed-health/current-price evidence only" in Path(
         "src/axetos_market_data/bridge.py"
     ).read_text(encoding="utf-8")

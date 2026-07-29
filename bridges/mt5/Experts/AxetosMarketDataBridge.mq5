@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "3.02"
+#property version   "3.03"
 #property strict
 #property description "Passive MT5 adapter controlled entirely by Axetos Market Data Server."
 
@@ -108,7 +108,7 @@ void SendTicks()
       if(items != "") items += ",";
       items += StringFormat(
          "{\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"timeUtc\":\"%s\",\"bid\":%s,\"ask\":%s,\"last\":%s,\"volume\":%I64u}",
-         JsonEscape(symbol), JsonEscape(symbol), IsoUtc(BrokerToUtc((datetime)tick.time)),
+         JsonEscape(symbol), JsonEscape(symbol), IsoUtc((datetime)tick.time),
          DoubleToString(tick.bid, digits), DoubleToString(tick.ask, digits),
          DoubleToString(tick.last > 0 ? tick.last : (tick.bid + tick.ask) / 2.0, digits), tick.volume);
    }
@@ -215,7 +215,7 @@ bool UploadCandles(string symbol, string interval, string request_id,
          if(items != "") items += ",";
          items += StringFormat(
             "{\"timeUtc\":\"%s\",\"open\":%s,\"high\":%s,\"low\":%s,\"close\":%s,\"tickVolume\":%I64d}",
-            IsoUtc(BrokerToUtc(rates[i].time)),
+            IsoUtc(rates[i].time),
             DoubleToString(rates[i].open, digits), DoubleToString(rates[i].high, digits),
             DoubleToString(rates[i].low, digits), DoubleToString(rates[i].close, digits), rates[i].tick_volume);
       }
@@ -247,8 +247,8 @@ void ReportAvailability(string request_id, string interval, MqlRates &rates[], i
                  "&requestId=" + request_id + "&candleCount=" + IntegerToString(MathMax(0, copied));
    if(copied > 0)
    {
-      path += "&earliestUtc=" + IsoUtc(BrokerToUtc(rates[0].time));
-      path += "&latestUtc=" + IsoUtc(BrokerToUtc(rates[copied - 1].time));
+      path += "&earliestUtc=" + IsoUtc(rates[0].time);
+      path += "&latestUtc=" + IsoUtc(rates[copied - 1].time);
    }
    string response = "";
    HttpPost(path, "{}", InpControlTimeoutMs, response);
@@ -319,12 +319,11 @@ datetime ParseUtc(string value)
    if(plus > 0) normalized = StringSubstr(normalized, 0, plus);
    StringReplace(normalized, "-", ".");
 
-   // StringToTime and CopyRates use the MT5 broker/server clock. Server
-   // commands are UTC, so convert the parsed UTC wall-clock value to the
-   // broker clock before querying rates. Without this conversion a UTC+3
-   // broker returns candles from three hours earlier than requested.
-   datetime utc_value = StringToTime(normalized);
-   return UtcToBroker(utc_value);
+   // MQL datetime values are absolute Unix timestamps. CopyRates accepts the
+   // same absolute timestamp even though MT5 renders chart labels using the
+   // broker's display clock. Never add the broker offset here: doing so shifts
+   // the requested market window. The server command and database remain UTC.
+   return StringToTime(normalized);
 }
 
 string BuildTerminalId()
@@ -336,24 +335,6 @@ string BuildTerminalId()
    StringReplace(value, "\\", "-");
    StringReplace(value, ":", "-");
    return value;
-}
-
-long BrokerUtcOffsetSeconds()
-{
-   long offset = (long)TimeTradeServer() - (long)TimeGMT();
-   offset = (long)MathRound((double)offset / 900.0) * 900;
-   if(MathAbs((double)offset) > 14.0 * 3600.0) offset = 0;
-   return offset;
-}
-
-datetime UtcToBroker(datetime value)
-{
-   return (datetime)((long)value + BrokerUtcOffsetSeconds());
-}
-
-datetime BrokerToUtc(datetime value)
-{
-   return (datetime)((long)value - BrokerUtcOffsetSeconds());
 }
 
 string IsoUtc(datetime value)

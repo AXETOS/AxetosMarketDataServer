@@ -49,7 +49,7 @@ def test_masked_password_preserves_existing_secret(tmp_path: Path, monkeypatch):
 
 
 def test_v0333_release_metadata_and_ui():
-    assert __version__ == "0.67.7"
+    assert __version__ == "0.67.8"
     html = Path("src/axetos_market_data/web.py").read_text(encoding="utf-8")
     assert "MT5 password" in html
     assert "Password environment variable name" not in html

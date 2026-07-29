@@ -2,10 +2,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-def test_mt5_utc_commands_are_converted_to_broker_clock():
+
+def test_mt5_copyrates_uses_server_utc_timestamp_without_broker_offset():
     source = (ROOT / "bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "3.02"' in source
-    assert "return UtcToBroker(utc_value);" in source
-    assert "datetime UtcToBroker(datetime value)" in source
-    assert "datetime BrokerToUtc(datetime value)" in source
-    assert "BrokerUtcOffsetSeconds()" in source
+    assert '#property version   "3.03"' in source
+    assert "return StringToTime(normalized);" in source
+    assert "UtcToBroker" not in source
+    assert "BrokerToUtc" not in source
+    assert "BrokerUtcOffsetSeconds" not in source
+    assert 'IsoUtc(rates[i].time)' in source
+
+
+def test_bridge_documents_utc_storage_invariant():
+    source = (ROOT / "bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
+    assert "database remain UTC" in source
+    assert "Never add the broker offset" in source

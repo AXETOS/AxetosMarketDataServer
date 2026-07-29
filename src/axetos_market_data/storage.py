@@ -1278,6 +1278,26 @@ class MarketDataStore:
             ).fetchone()
         return None if row is None else dict(row)
 
+    def preferred_history_symbol(self, provider: str, instrument: str) -> str | None:
+        """Return the single confirmed provider symbol allowed to write candle history.
+
+        Candle rows are keyed by provider and canonical instrument, not broker symbol.
+        Accepting two broker symbols that normalize to the same instrument would therefore
+        mix or overwrite incompatible price series.
+        """
+        policies = [
+            item for item in self.list_symbol_policies(provider_key=provider, instrument=instrument)
+            if bool(item.get("enabled")) and bool(item.get("allow_history"))
+        ]
+        if not policies:
+            return None
+        policies.sort(key=lambda item: (
+            item.get("priority_override") is None,
+            int(item.get("priority_override") or 0),
+            str(item["provider_symbol"]),
+        ))
+        return str(policies[0]["provider_symbol"])
+
     def preferred_live_symbol(self, provider: str, instrument: str) -> str | None:
         """Return the single confirmed provider symbol allowed to drive live display.
 

@@ -305,6 +305,13 @@ class Mt5BridgeService:
         preferred_symbol = self.store.preferred_live_symbol(provider, instrument)
         return preferred_symbol is None or provider_symbol == preferred_symbol
 
+    def _history_symbol_allowed(self, provider: str, provider_symbol: str, instrument: str) -> bool:
+        policy = self.store.get_symbol_policy(provider, provider_symbol)
+        if policy is not None and (not bool(policy.get("enabled")) or not bool(policy.get("allow_history"))):
+            return False
+        preferred_symbol = self.store.preferred_history_symbol(provider, instrument)
+        return preferred_symbol is None or provider_symbol == preferred_symbol
+
     def quotes(self, request: BridgeQuotesRequest) -> int:
         """Persist provider-scoped quote snapshots for display only.
 
@@ -397,6 +404,11 @@ class Mt5BridgeService:
         instrument = self.symbols.resolve(
             request.provider_key, request.provider_symbol, request.canonical_instrument
         ).canonical_instrument
+        if not self._history_symbol_allowed(request.provider_key, request.provider_symbol, instrument):
+            raise ValueError(
+                f"Provider symbol '{request.provider_symbol}' is not the confirmed history symbol "
+                f"for {request.provider_key} {instrument}"
+            )
         incoming: list[Candle] = []
         for item in request.candles:
             try:

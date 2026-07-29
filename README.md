@@ -2,6 +2,14 @@
 
 A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
 
+## Version 0.67.5
+
+### Provider-symbol aligned official candle storage
+
+Official MT5 candle uploads are now accepted only from the single confirmed history-enabled provider symbol for each provider and canonical instrument. Candle rows are keyed by provider and canonical instrument, so allowing duplicate broker symbols to write into the same series could mix or overwrite materially different prices even while the live quote remained correct.
+
+Rejected duplicate or disabled history symbols now return an explicit HTTP 400 validation error and cannot alter stored candles. After installing this release, run **Repair last 24h (M1)** once to replace any recently mixed rows with the confirmed MT5 symbol's authoritative candles.
+
 ## Version 0.67.4
 
 ### Provider-symbol aligned live quotes and temporary candles

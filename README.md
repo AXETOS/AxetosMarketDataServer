@@ -2,6 +2,14 @@
 
 A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
 
+## Version 0.67.4
+
+### Provider-symbol aligned live quotes and temporary candles
+
+Live quotes and the server-generated current-minute candle now accept data only from the single confirmed provider symbol configured for that canonical instrument. Disabled, duplicate, or non-live mappings are ignored even when their broker symbols normalize to the same canonical name.
+
+The quote API also reads the exact confirmed provider symbol instead of selecting whichever duplicate symbol posted most recently. This keeps persisted official candles, bid/ask, and the temporary current-minute candle on one provider/symbol price stream. If the confirmed symbol has no quote, the server reports no current quote rather than silently attaching a different duplicate symbol.
+
 ## Version 0.67.3
 
 ### Server-side temporary current-minute candle

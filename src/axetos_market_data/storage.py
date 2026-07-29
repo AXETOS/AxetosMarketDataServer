@@ -1260,18 +1260,43 @@ class MarketDataStore:
         with self.connect() as c:
             c.execute("""INSERT INTO mt5_bridge_quotes VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider_key,terminal_instance_id,provider_symbol) DO UPDATE SET canonical_instrument=excluded.canonical_instrument,source_time_utc=excluded.source_time_utc,received_utc=excluded.received_utc,bid=excluded.bid,ask=excluded.ask,last=excluded.last,volume=excluded.volume""",(provider,terminal,value['provider_symbol'],value['canonical_instrument'],_iso(value['time_utc']),_iso(received),str(value['bid']),str(value['ask']),None if value.get('last') is None else str(value['last']),None if value.get('volume') is None else str(value['volume'])))
 
-    def latest_bridge_quote(self, instrument: str, provider: str | None = None) -> dict[str, object] | None:
+    def latest_bridge_quote(
+        self, instrument: str, provider: str | None = None, provider_symbol: str | None = None,
+    ) -> dict[str, object] | None:
         where = "canonical_instrument=?"
         parameters: list[object] = [instrument]
         if provider is not None:
             where += " AND provider_key=?"
             parameters.append(provider)
+        if provider_symbol is not None:
+            where += " AND provider_symbol=?"
+            parameters.append(provider_symbol)
         with self.connect() as c:
             row = c.execute(
                 f"SELECT * FROM mt5_bridge_quotes WHERE {where} ORDER BY received_utc DESC LIMIT 1",
                 parameters,
             ).fetchone()
         return None if row is None else dict(row)
+
+    def preferred_live_symbol(self, provider: str, instrument: str) -> str | None:
+        """Return the single confirmed provider symbol allowed to drive live display.
+
+        Duplicate broker symbols can normalize to the same canonical instrument but trade
+        at materially different prices. Once mappings are configured, only the enabled
+        live mapping may supply quotes or the temporary current-minute candle.
+        """
+        policies = [
+            item for item in self.list_symbol_policies(provider_key=provider, instrument=instrument)
+            if bool(item.get("enabled")) and bool(item.get("allow_live"))
+        ]
+        if not policies:
+            return None
+        policies.sort(key=lambda item: (
+            item.get("priority_override") is None,
+            int(item.get("priority_override") or 0),
+            str(item["provider_symbol"]),
+        ))
+        return str(policies[0]["provider_symbol"])
 
     def bridge_status(self) -> dict[str, object]:
         with self.connect() as c:

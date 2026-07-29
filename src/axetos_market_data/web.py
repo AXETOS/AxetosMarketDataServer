@@ -1451,13 +1451,17 @@ def create_app(
             if isinstance(preferred, dict):
                 active_provider = str(preferred["provider_key"])
 
+        active_provider_symbol = (
+            store.preferred_live_symbol(active_provider, instrument)
+            if active_provider is not None else None
+        )
         if active_provider is not None:
-            value = store.latest_bridge_quote(instrument, active_provider)
+            value = store.latest_bridge_quote(instrument, active_provider, active_provider_symbol)
 
         # Availability fallback is allowed only when the canonical provider has no
         # recent quote. It is not evaluated on every tick, preventing provider hopping.
         now = server_now()
-        if provider is None:
+        if provider is None and active_provider_symbol is None:
             canonical_is_stale = (
                 value is not None and
                 now - datetime.fromisoformat(str(value["received_utc"])) > timedelta(seconds=30)

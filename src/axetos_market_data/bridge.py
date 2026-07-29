@@ -298,6 +298,13 @@ class Mt5BridgeService:
             replace_window=replace_window,
         )
 
+    def _live_symbol_allowed(self, provider: str, provider_symbol: str, instrument: str) -> bool:
+        policy = self.store.get_symbol_policy(provider, provider_symbol)
+        if policy is not None and (not bool(policy.get("enabled")) or not bool(policy.get("allow_live"))):
+            return False
+        preferred_symbol = self.store.preferred_live_symbol(provider, instrument)
+        return preferred_symbol is None or provider_symbol == preferred_symbol
+
     def quotes(self, request: BridgeQuotesRequest) -> int:
         """Persist provider-scoped quote snapshots for display only.
 
@@ -314,6 +321,8 @@ class Mt5BridgeService:
             instrument = self.symbols.resolve(
                 request.provider_key, item.provider_symbol, item.canonical_instrument
             ).canonical_instrument
+            if not self._live_symbol_allowed(request.provider_key, item.provider_symbol, instrument):
+                continue
             source_time = self._normalize_live_timestamp(item.time_utc, now)
             value = item.model_dump(by_alias=False)
             value["canonical_instrument"] = instrument
@@ -470,6 +479,9 @@ class Mt5BridgeService:
                         instrument = self.symbols.resolve(
                             request.provider_key, item.provider_symbol, item.canonical_instrument
                         ).canonical_instrument
+                        if not self._live_symbol_allowed(request.provider_key, item.provider_symbol, instrument):
+                            self.stats.rejected_ticks += 1
+                            continue
                         # Candle boundaries must use the MT5 source timestamp, never HTTP
                         # receipt time or local server processing time.
                         received_time = item.received_utc or server_now()

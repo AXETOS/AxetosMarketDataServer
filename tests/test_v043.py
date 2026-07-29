@@ -25,9 +25,9 @@ def _discover(client: TestClient) -> None:
 
 
 def test_release_metadata() -> None:
-    assert __version__ == "0.67.3"
-    assert 'version = "0.67.3"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.67.3" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.67.4"
+    assert 'version = "0.67.4"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.67.4" in (ROOT / "README.md").read_text(encoding="utf-8")
 
 
 def test_enabled_symbols_plain_text_contract(tmp_path) -> None:

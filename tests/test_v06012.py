@@ -41,7 +41,7 @@ def test_full_live_queue_discards_oldest_snapshot_and_accepts_newest() -> None:
 
 def test_bridge_v127_treats_tick_backpressure_separately() -> None:
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "3.01"' in source
+    assert '#property version   "3.02"' in source
     assert "IsTickBackpressure" not in source
     assert "retry_after" not in source
     assert "SendTicks" in source

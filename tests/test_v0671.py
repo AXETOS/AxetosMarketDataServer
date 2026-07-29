@@ -4,14 +4,14 @@ from axetos_market_data import __version__
 
 
 def test_release_metadata() -> None:
-    assert __version__ == "0.67.5"
-    assert 'version = "0.67.5"' in Path("pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.67.5" in Path("README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.67.7"
+    assert 'version = "0.67.7"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.67.7" in Path("README.md").read_text(encoding="utf-8")
 
 
 def test_passive_bridge_has_concise_command_logging() -> None:
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "3.01"' in source
+    assert '#property version   "3.02"' in source
     assert "command received action=" in source
     assert "CopyRates started" in source
     assert "CopyRates returned bars=" in source

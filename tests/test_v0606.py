@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_targeted_backfill_upload_is_chunked_and_acknowledged_before_completion() -> None:
     bridge = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "3.01"' in bridge
+    assert '#property version   "3.02"' in bridge
     assert "InpUploadChunkSize" in bridge
     assert "chunk_count = (copied + chunk_size - 1) / chunk_size" in bridge
     assert "stored + skipped != last - first" in bridge

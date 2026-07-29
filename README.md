@@ -2,7 +2,14 @@
 
 A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
 
-## Version 0.67.6
+## Version 0.67.7
+
+- Corrected MT5 UTC-to-broker-time conversion before `CopyRates`. Server command windows are UTC; MT5 rate queries use the broker clock. The bridge now converts UTC to broker time before querying and converts returned bar timestamps back to UTC.
+- This removes the broker-offset shift that made recent M1 candles several hours old, left too few current candles on the Trading Platform, and made the temporary current-price candle appear disconnected from official history.
+- MT5 bridge version increased to 3.02. Recompile and reattach the bridge after updating.
+- After installation, run **Repair last 24h (M1)** once to replace the previously downloaded time-shifted candles.
+
+## Version 0.67.7
 
 ### Release metadata regression correction
 

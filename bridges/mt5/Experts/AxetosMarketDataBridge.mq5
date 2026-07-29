@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "3.01"
+#property version   "3.02"
 #property strict
 #property description "Passive MT5 adapter controlled entirely by Axetos Market Data Server."
 
@@ -25,7 +25,7 @@ int OnInit()
    EventSetTimer(1);
    SendHeartbeat();
    RefreshTickSymbols();
-   PrintFormat("Axetos MT5 Bridge v3.01 started; provider=%s server=%s", InpProviderKey, InpServerUrl);
+   PrintFormat("Axetos MT5 Bridge v3.02 started; provider=%s server=%s", InpProviderKey, InpServerUrl);
    return INIT_SUCCEEDED;
 }
 
@@ -318,7 +318,13 @@ datetime ParseUtc(string value)
    int plus = StringFind(normalized, "+");
    if(plus > 0) normalized = StringSubstr(normalized, 0, plus);
    StringReplace(normalized, "-", ".");
-   return StringToTime(normalized);
+
+   // StringToTime and CopyRates use the MT5 broker/server clock. Server
+   // commands are UTC, so convert the parsed UTC wall-clock value to the
+   // broker clock before querying rates. Without this conversion a UTC+3
+   // broker returns candles from three hours earlier than requested.
+   datetime utc_value = StringToTime(normalized);
+   return UtcToBroker(utc_value);
 }
 
 string BuildTerminalId()
@@ -332,12 +338,22 @@ string BuildTerminalId()
    return value;
 }
 
-datetime BrokerToUtc(datetime value)
+long BrokerUtcOffsetSeconds()
 {
    long offset = (long)TimeTradeServer() - (long)TimeGMT();
    offset = (long)MathRound((double)offset / 900.0) * 900;
    if(MathAbs((double)offset) > 14.0 * 3600.0) offset = 0;
-   return (datetime)((long)value - offset);
+   return offset;
+}
+
+datetime UtcToBroker(datetime value)
+{
+   return (datetime)((long)value + BrokerUtcOffsetSeconds());
+}
+
+datetime BrokerToUtc(datetime value)
+{
+   return (datetime)((long)value - BrokerUtcOffsetSeconds());
 }
 
 string IsoUtc(datetime value)

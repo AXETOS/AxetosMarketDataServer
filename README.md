@@ -2,7 +2,10 @@
 
 A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
 
-## Version 0.67.8
+## Version 0.67.9
+
+Server-referenced MT5 command clock: immediately before every FETCH, BACKFILL, DISCOVER, or AVAILABILITY CopyRates command, the server compares its clock with the latest tick timestamp received from that exact MT5 terminal and translates the requested range into the terminal clock. The bridge remains passive and unchanged. Stale clock observations are rejected.
+
 
 ### MT5 UTC timestamp correction
 
@@ -17,7 +20,7 @@ A provider-agnostic market-data service for official source candles, current quo
 - MT5 bridge version increased to 3.02. Recompile and reattach the bridge after updating.
 - After installation, run **Repair last 24h (M1)** once to replace the previously downloaded time-shifted candles.
 
-## Version 0.67.8
+## Version 0.67.9
 
 ### Release metadata regression correction
 

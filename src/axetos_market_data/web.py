@@ -43,6 +43,7 @@ from .history_worker import HistoryIngestionProcess
 from .repair_worker import CandleRepairProcess
 from .hierarchical_repair import HierarchicalCandleRepair
 from .live_m1 import LiveM1CommandScheduler
+from .mt5_command_clock import shift_copyrates_command
 from .authoritative_refresh import AuthoritativeRefreshBuffer
 
 
@@ -741,12 +742,16 @@ def create_app(
     ) -> str:
         _ = terminal_instance_id
         command = full_history.next_request(provider_key)
-        if command:
-            return command
         worker = supervisor.get(provider_key)
         if worker is None or worker.config.kind.lower() != "mt5" or not worker.config.enabled:
             return ""
-        return live_m1.next_command(provider_key, worker.config.normalized_symbols())
+        if not command:
+            command = live_m1.next_command(provider_key, worker.config.normalized_symbols())
+        # Immediately before every CopyRates request, reference the requested
+        # server-time window against the latest terminal tick clock already
+        # received from this MT5 terminal.  The bridge remains passive.
+        quote = store.latest_bridge_quote_for_terminal(provider_key, terminal_instance_id)
+        return shift_copyrates_command(command, quote)
 
     @app.post("/api/market-data/mt5/repair-result")
     def bridge_repair_result(

@@ -1260,6 +1260,14 @@ class MarketDataStore:
         with self.connect() as c:
             c.execute("""INSERT INTO mt5_bridge_quotes VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider_key,terminal_instance_id,provider_symbol) DO UPDATE SET canonical_instrument=excluded.canonical_instrument,source_time_utc=excluded.source_time_utc,received_utc=excluded.received_utc,bid=excluded.bid,ask=excluded.ask,last=excluded.last,volume=excluded.volume""",(provider,terminal,value['provider_symbol'],value['canonical_instrument'],_iso(value['time_utc']),_iso(received),str(value['bid']),str(value['ask']),None if value.get('last') is None else str(value['last']),None if value.get('volume') is None else str(value['volume'])))
 
+    def latest_bridge_quote_for_terminal(self, provider: str, terminal: str) -> dict[str, object] | None:
+        with self.connect() as c:
+            row = c.execute(
+                "SELECT * FROM mt5_bridge_quotes WHERE provider_key=? AND terminal_instance_id=? ORDER BY received_utc DESC LIMIT 1",
+                (provider, terminal),
+            ).fetchone()
+        return None if row is None else dict(row)
+
     def latest_bridge_quote(
         self, instrument: str, provider: str | None = None, provider_symbol: str | None = None,
     ) -> dict[str, object] | None:

@@ -16,9 +16,9 @@ def fx_tick(at: datetime, bid: str, ask: str) -> Tick:
 
 
 def test_release_and_readme_reference_price_documentation() -> None:
-    assert __version__ == "0.67.8"
+    assert __version__ == "0.67.9"
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "## Version 0.67.8" in readme
+    assert "## Version 0.67.9" in readme
     assert "normalized midpoint" in readme
     assert "spread-only flicker" in readme
 

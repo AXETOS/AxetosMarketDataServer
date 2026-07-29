@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "3.03"
+#property version   "3.04"
 #property strict
 #property description "Passive MT5 adapter controlled entirely by Axetos Market Data Server."
 
@@ -25,7 +25,7 @@ int OnInit()
    EventSetTimer(1);
    SendHeartbeat();
    RefreshTickSymbols();
-   PrintFormat("Axetos MT5 Bridge v3.02 started; provider=%s server=%s", InpProviderKey, InpServerUrl);
+   PrintFormat("Axetos MT5 Bridge v3.04 started; provider=%s server=%s", InpProviderKey, InpServerUrl);
    return INIT_SUCCEEDED;
 }
 
@@ -146,6 +146,14 @@ void PollCommand()
 void ExecuteCommand(string action, string provider_symbol, string interval,
                     string from_text, string to_text, string request_id)
 {
+   if(action == "TIME")
+   {
+      datetime terminal_time = TimeTradeServer();
+      if(terminal_time <= 0) terminal_time = TimeCurrent();
+      ReportTerminalTime(request_id, terminal_time);
+      return;
+   }
+
    string symbol = ResolveSymbol(provider_symbol);
    ENUM_TIMEFRAMES timeframe = ParseTimeframe(interval);
    datetime from_time = ParseUtc(from_text);
@@ -239,6 +247,19 @@ bool UploadCandles(string symbol, string interval, string request_id,
       skipped_out += skipped;
    }
    return true;
+}
+
+void ReportTerminalTime(string request_id, datetime terminal_time)
+{
+   string path = "/api/market-data/mt5/terminal-time?providerKey=" + InpProviderKey +
+                 "&terminalInstanceId=" + g_terminal_id +
+                 "&requestId=" + request_id +
+                 "&terminalTime=" + IsoUtc(terminal_time);
+   string response = "";
+   bool acknowledged = HttpPost(path, "{}", InpControlTimeoutMs, response);
+   if(InpLogCommands)
+      PrintFormat("Axetos MT5 Bridge: terminal time %s time=%s request=%s",
+                  acknowledged ? "acknowledged" : "not acknowledged", IsoUtc(terminal_time), request_id);
 }
 
 void ReportAvailability(string request_id, string interval, MqlRates &rates[], int copied)

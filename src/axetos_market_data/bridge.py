@@ -172,12 +172,14 @@ class Mt5BridgeService:
         heartbeat_sink: Callable[[str, dict[str, object]], None] | None = None,
         observation_sink: Callable[[Tick, bool], None] | None = None,
         history_process: HistoryIngestionProcess | None = None,
+        historical_timestamp_normalizer: Callable[[str | None, datetime], datetime] | None = None,
     ) -> None:
         self.store = store
         self.symbols = SymbolResolver(store)
         self._heartbeat_sink = heartbeat_sink
         self._observation_sink = observation_sink
         self._history_process = history_process
+        self._historical_timestamp_normalizer = historical_timestamp_normalizer
         self._queue: queue.Queue[BridgeTicksRequest | None] = queue.Queue(maxsize=max_queue_batches)
         self.stats = QueueStats()
         self._service = MarketDataService(self.store, persist_ticks=False)
@@ -413,7 +415,10 @@ class Mt5BridgeService:
         for item in request.candles:
             try:
                 incoming.append(Candle(
-                    request.provider_key, instrument, interval, ensure_server_local(item.time_utc),
+                    request.provider_key, instrument, interval,
+                    (self._historical_timestamp_normalizer(request.request_id, item.time_utc)
+                     if self._historical_timestamp_normalizer is not None
+                     else ensure_server_local(item.time_utc)),
                     item.open, item.high, item.low, item.close,
                     item.tick_volume or 0, Decimal(item.tick_volume or 0), True,
                 ))

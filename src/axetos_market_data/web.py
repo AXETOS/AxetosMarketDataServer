@@ -43,7 +43,7 @@ from .history_worker import HistoryIngestionProcess
 from .repair_worker import CandleRepairProcess
 from .hierarchical_repair import HierarchicalCandleRepair
 from .live_m1 import LiveM1CommandScheduler
-from .mt5_command_clock import shift_copyrates_command
+from .mt5_terminal_clock import Mt5TerminalClockCoordinator
 from .authoritative_refresh import AuthoritativeRefreshBuffer
 
 
@@ -511,11 +511,13 @@ def create_app(
         events.record("info", "database.backup", "Database backup created", details=result)
         return result
     housekeeping = HousekeepingService(store)
+    terminal_clock = Mt5TerminalClockCoordinator()
     bridge = Mt5BridgeService(
         store,
         heartbeat_sink=supervisor.record_bridge_heartbeat,
         observation_sink=supervisor.record_bridge_observation,
         history_process=history_process,
+        historical_timestamp_normalizer=terminal_clock.normalize_returned_timestamp,
     )
     full_history.set_pressure_probe(bridge.can_run_background_write)
     quality = CandleQualityService(store)
@@ -747,11 +749,24 @@ def create_app(
             return ""
         if not command:
             command = live_m1.next_command(provider_key, worker.config.normalized_symbols())
-        # Immediately before every CopyRates request, reference the requested
-        # server-time window against the latest terminal tick clock already
-        # received from this MT5 terminal.  The bridge remains passive.
-        quote = store.latest_bridge_quote_for_terminal(provider_key, terminal_instance_id)
-        return shift_copyrates_command(command, quote)
+        # Every CopyRates command is preceded by an explicit terminal-time
+        # handshake. The server never guesses broker time from quote timestamps.
+        return terminal_clock.prepare(provider_key, terminal_instance_id, command)
+
+    @app.post("/api/market-data/mt5/terminal-time")
+    def bridge_terminal_time(
+        provider_key: str = Query(alias="providerKey"),
+        terminal_instance_id: str = Query(alias="terminalInstanceId"),
+        request_id: str = Query(alias="requestId"),
+        terminal_time: datetime = Query(alias="terminalTime"),
+    ) -> dict[str, object]:
+        try:
+            offset = terminal_clock.record_terminal_time(
+                provider_key, terminal_instance_id, request_id, terminal_time
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"accepted": True, "offsetSeconds": int(offset.total_seconds())}
 
     @app.post("/api/market-data/mt5/repair-result")
     def bridge_repair_result(
@@ -775,6 +790,7 @@ def create_app(
                 unavailable=unavailable, error_code=error_code,
             )
         accepted = acknowledgement != "IGNORED"
+        terminal_clock.complete(request_id)
         return {
             "accepted": accepted,
             "requestId": request_id,
@@ -789,9 +805,19 @@ def create_app(
         latest_utc: datetime | None = Query(default=None, alias="latestUtc"),
         candle_count: int = Query(default=0, alias="candleCount"),
     ) -> dict[str, object]:
-        decision = full_history.availability_result(
-            provider_key, request_id, earliest=earliest_utc, latest=latest_utc, count=candle_count
+        normalized_earliest = (
+            terminal_clock.normalize_returned_timestamp(request_id, earliest_utc)
+            if earliest_utc is not None else None
         )
+        normalized_latest = (
+            terminal_clock.normalize_returned_timestamp(request_id, latest_utc)
+            if latest_utc is not None else None
+        )
+        decision = full_history.availability_result(
+            provider_key, request_id, earliest=normalized_earliest,
+            latest=normalized_latest, count=candle_count,
+        )
+        terminal_clock.complete(request_id)
         return PlainTextResponse(decision)
 
     @app.post("/api/full-history/{provider_key}")

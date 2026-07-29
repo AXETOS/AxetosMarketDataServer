@@ -1,26 +1,12 @@
-# Axetos Market Data Server
+## Version 0.68.0
 
-A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
+- Added an explicit per-command MT5 terminal-time handshake. Before every `CopyRates` operation, the server issues a `TIME` command and the bridge reports `TimeTradeServer()`.
+- The server compares that explicit terminal clock with its own clock, translates the requested server-time window into MT5 terminal time, and sends the corrected `CopyRates` command.
+- Returned MT5 candle timestamps are translated back by the same per-request offset before database persistence, so stored candle keys remain in server time.
+- Removed the v0.67.9 quote/tick timestamp inference. Quote timestamps are no longer used to guess the MT5 terminal clock.
+- MT5 bridge version 3.04 adds only the terminal-time response command; all history scheduling and range selection remain server-controlled.
 
-## Version 0.67.9
-
-Server-referenced MT5 command clock: immediately before every FETCH, BACKFILL, DISCOVER, or AVAILABILITY CopyRates command, the server compares its clock with the latest tick timestamp received from that exact MT5 terminal and translates the requested range into the terminal clock. The bridge remains passive and unchanged. Stale clock observations are rejected.
-
-
-### MT5 UTC timestamp correction
-
-- MT5 bridge v3.03 now passes server UTC Unix timestamps directly to `CopyRates`.
-- Returned `MqlRates.time` values are uploaded unchanged as UTC timestamps.
-- Broker display-time offsets are never applied to command windows or stored candle keys.
-- This reverses the incorrect v3.02 broker-offset conversion that shifted requested candle windows.
-
-
-- Corrected MT5 UTC-to-broker-time conversion before `CopyRates`. Server command windows are UTC; MT5 rate queries use the broker clock. The bridge now converts UTC to broker time before querying and converts returned bar timestamps back to UTC.
-- This removes the broker-offset shift that made recent M1 candles several hours old, left too few current candles on the Trading Platform, and made the temporary current-price candle appear disconnected from official history.
-- MT5 bridge version increased to 3.02. Recompile and reattach the bridge after updating.
-- After installation, run **Repair last 24h (M1)** once to replace the previously downloaded time-shifted candles.
-
-## Version 0.67.9
+## Version 0.67.6
 
 ### Release metadata regression correction
 

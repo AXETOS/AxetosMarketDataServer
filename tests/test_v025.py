@@ -7,9 +7,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_release_version_and_github_readme() -> None:
-    assert __version__ == "0.67.9"
+    assert __version__ == "0.68.0"
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    assert "## Version 0.67.9" in readme
+    assert "## Version 0.68.0" in readme
     assert "Docker deployment" in readme
     assert "excluded from release ZIPs and Git" not in readme
 

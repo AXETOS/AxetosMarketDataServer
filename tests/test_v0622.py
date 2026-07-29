@@ -7,8 +7,8 @@ def test_v0622_metadata_and_bridge_priority() -> None:
     root = Path(__file__).resolve().parents[1]
     bridge = (root / "bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
     readme = (root / "README.md").read_text(encoding="utf-8")
-    assert __version__ == "0.67.4"
+    assert __version__ == "0.67.6"
     assert '#property version   "3.01"' in bridge
     timer = bridge[bridge.index("void OnTimer()"):bridge.index("void SendHeartbeat")]
     assert timer.index("SendHeartbeat();") < timer.index("PollCommand();")
-    assert readme.index("## Version 0.67.4") < readme.index("## Version 0.62.2")
+    assert readme.index("## Version 0.67.6") < readme.index("## Version 0.62.2")

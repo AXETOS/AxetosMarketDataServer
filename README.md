@@ -2,6 +2,12 @@
 
 A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
 
+## Version 0.67.6
+
+### Release metadata regression correction
+
+All historical release-metadata tests now assert the current package version instead of the previous 0.67.4 release. This restores SQLite and PostgreSQL CI coverage for v0.67.5 functionality without changing the provider-symbol candle-ingestion behavior.
+
 ## Version 0.67.5
 
 ### Provider-symbol aligned official candle storage

@@ -110,6 +110,44 @@ class InstrumentSelectionRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+
+
+@dataclass(slots=True)
+class TemporaryMinuteCandle:
+    provider: str
+    instrument: str
+    timestamp: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    current_price: Decimal
+    last_tick_time: datetime
+    tick_count: int = 1
+
+    def apply(self, tick: Tick) -> None:
+        price = tick.market_price
+        self.high = max(self.high, price)
+        self.low = min(self.low, price)
+        self.current_price = price
+        self.last_tick_time = tick.timestamp
+        self.tick_count += 1
+
+    def as_candle(self) -> Candle:
+        return Candle(
+            provider=self.provider,
+            instrument=self.instrument,
+            timeframe="1m",
+            open_time=self.timestamp,
+            open=self.open,
+            high=self.high,
+            low=self.low,
+            close=self.current_price,
+            tick_count=self.tick_count,
+            volume=None,
+            complete=False,
+        )
+
+
 @dataclass(slots=True)
 class QueueStats:
     queued_batches: int = 0
@@ -144,6 +182,7 @@ class Mt5BridgeService:
         self.stats = QueueStats()
         self._service = MarketDataService(self.store, persist_ticks=False)
         self._last_ingested: dict[tuple[str, str], datetime] = {}
+        self._temporary_minutes: dict[tuple[str, str], TemporaryMinuteCandle] = {}
         self._ingest_lock = RLock()
         self._queue_lock = RLock()
         self._stopping = False
@@ -306,12 +345,32 @@ class Mt5BridgeService:
                 if self._observation_sink is not None:
                     self._observation_sink(tick, False)
                 return False
-            # Live observations are feed-health/current-price evidence only.
-            # Official M1 candles are polled from MT5 after each minute closes.
             self._last_ingested[key] = tick.timestamp
+            minute = bucket_start(tick.timestamp, "1m")
+            price = tick.market_price
+            current = self._temporary_minutes.get(key)
+            if current is None or current.timestamp != minute:
+                self._temporary_minutes[key] = TemporaryMinuteCandle(
+                    provider=tick.provider,
+                    instrument=tick.instrument,
+                    timestamp=minute,
+                    open=price,
+                    high=price,
+                    low=price,
+                    current_price=price,
+                    last_tick_time=tick.timestamp,
+                )
+            else:
+                current.apply(tick)
             if self._observation_sink is not None:
                 self._observation_sink(tick, True)
             return True
+
+    def temporary_minute(self, provider: str, instrument: str) -> Candle | None:
+        """Return the current in-memory M1 candle used only for chart display."""
+        with self._ingest_lock:
+            value = self._temporary_minutes.get((provider, instrument))
+            return None if value is None else value.as_candle()
 
     def candles(
         self, request: BridgeCandlesRequest, *, replace_flatline: bool = False, replace_all: bool = False,

@@ -2,6 +2,14 @@
 
 A provider-agnostic market-data service for official source candles, current quotes, deterministic aggregation, and durable storage.
 
+## Version 0.67.3
+
+### Server-side temporary current-minute candle
+
+Live MT5 ticks remain non-persistent and are used by the server to maintain one in-memory candle for the currently open minute per provider/instrument. The state tracks the minute timestamp, open, high, low, latest current price, and last tick time. The chart API appends this candle with `complete=false`, exposing the latest current price as its temporary close.
+
+At a minute boundary the old temporary state is discarded. The server continues requesting the previous two completed official M1 candles from MT5, so the finalized provider candle replaces the temporary display without storing tick history or provisional M1 rows. The MT5 bridge remains passive and unchanged.
+
 ## Version 0.67.2
 
 ### Authoritative 24-hour M1 window reset

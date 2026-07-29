@@ -8,9 +8,9 @@ BRIDGE = ROOT / "bridges" / "mt5" / "Experts" / "AxetosMarketDataBridge.mq5"
 
 
 def test_release_metadata_is_v041() -> None:
-    assert __version__ == "0.67.2"
-    assert 'version = "0.67.2"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.67.2" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.67.3"
+    assert 'version = "0.67.3"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.67.3" in (ROOT / "README.md").read_text(encoding="utf-8")
 
 
 def test_access_logging_is_disabled_by_default(monkeypatch) -> None:

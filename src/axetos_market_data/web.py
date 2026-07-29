@@ -21,7 +21,7 @@ from .history import HistoricalBackfillService, AuthoritativeHistoryRebuildServi
 from .providers.mt5 import MetaTrader5TickProvider
 from .providers.yahoo import YahooHistoricalProvider
 from .calendar import MarketCalendar
-from .clock import server_now
+from .clock import ensure_server_local, server_now
 from datetime import datetime, UTC, timedelta
 from decimal import Decimal
 from .storage import MarketDataStore
@@ -1394,6 +1394,16 @@ def create_app(
             if available_provider is not None and available_provider != active_provider:
                 active_provider = available_provider
                 values = store.read_candles(instrument, timeframe, limit, active_provider, from_utc, to_utc)
+        if timeframe == "1m" and active_provider is not None:
+            temporary = bridge.temporary_minute(active_provider, instrument)
+            if temporary is not None:
+                in_window = (from_utc is None or temporary.open_time >= ensure_server_local(from_utc)) and (
+                    to_utc is None or temporary.open_time <= ensure_server_local(to_utc)
+                )
+                if in_window and not any(item.open_time == temporary.open_time for item in values):
+                    values = [*values, temporary]
+                    if len(values) > limit:
+                        values = values[-limit:]
         return {
             "instrument": instrument,
             "timeframe": timeframe,

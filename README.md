@@ -1,5 +1,12 @@
 # Axetos Market Data Server
 
+## Version 0.68.6
+
+- Full-history backfill now creates an explicit ten-year source plan for every selected instrument: M1 month-by-month, H1 year-by-year, and D1 across the full ten-year window.
+- Per-instrument logs now distinguish planned, attempted, unavailable, received, stored, and skipped ranges for M1, H1, and D1.
+- A provider returning no source bars for all three timeframes is reported as an instrument failure; candle repair is skipped and the server no longer claims that history was saved.
+- Updated all release-sensitive tests to the current version.
+
 ## Version 0.68.5
 
 - Restored the provider-card **Download full MT5 history** button for manual server-driven backfill.

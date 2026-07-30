@@ -61,6 +61,9 @@ class InstrumentProgress:
     stored_by_timeframe: dict[str, int] = field(default_factory=dict)
     skipped_by_timeframe: dict[str, int] = field(default_factory=dict)
     ranges_by_timeframe: dict[str, int] = field(default_factory=dict)
+    planned_by_timeframe: dict[str, int] = field(default_factory=dict)
+    attempted_by_timeframe: dict[str, int] = field(default_factory=dict)
+    unavailable_by_timeframe: dict[str, int] = field(default_factory=dict)
     # Compatibility/status fields retained for clients and older tests.
     tier_index: int = 0
     tier_start: datetime | None = None
@@ -149,6 +152,7 @@ class FullHistoryBackfillManager:
                 item.discovery_complete = True
                 item.status = "queued"
                 item.missing_ranges = self._simple_source_ranges(now)
+                item.planned_by_timeframe = self._count_by_timeframe(item.missing_ranges)
                 instruments.append(item)
             job = FullHistoryJob(
                 job_id=uuid.uuid4().hex,
@@ -159,9 +163,21 @@ class FullHistoryBackfillManager:
             )
             self._jobs[job.job_id] = job
             self._provider_job[provider_key] = job.job_id
-            self._emit("backfill.download_started", "Simple ten-year source download started", provider_key,
+            self._emit("backfill.download_started", "Ten-year MT5 source download started", provider_key,
                        {"job_id": job.job_id, "instruments": len(symbols),
-                        "timeframes": ["1m", "1h", "1d"]})
+                        "timeframes": ["1m", "1h", "1d"],
+                        "window_years": 10})
+            for item in instruments:
+                self._emit("backfill.instrument_plan_created",
+                           f"History plan for {item.instrument}: "
+                           f"M1 ranges={item.planned_by_timeframe.get('1m', 0)}, "
+                           f"H1 ranges={item.planned_by_timeframe.get('1h', 0)}, "
+                           f"D1 ranges={item.planned_by_timeframe.get('1d', 0)}",
+                           provider_key, {"job_id": job.job_id, "instrument": item.instrument,
+                                          "provider_symbol": item.provider_symbol,
+                                          "planned_ranges": dict(item.planned_by_timeframe),
+                                          "from_utc": item.missing_ranges[0].start.isoformat() if item.missing_ranges else None,
+                                          "to_utc": item.missing_ranges[-1].end.isoformat() if item.missing_ranges else None})
             return self._view(job)
 
     def start_targeted(
@@ -392,6 +408,9 @@ class FullHistoryBackfillManager:
             item.last_error_code = error_code
 
             if unavailable:
+                timeframe = item.timeframe
+                item.unavailable_by_timeframe[timeframe] = item.unavailable_by_timeframe.get(timeframe, 0) + 1
+                item.ranges_by_timeframe[timeframe] = item.ranges_by_timeframe.get(timeframe, 0) + 1
                 self._mark_bad(item, current, "provider_unavailable", error_code)
                 self._advance_download(item)
                 return f"UNAVAILABLE|{received}|{inserted}|{skipped}"
@@ -550,6 +569,7 @@ class FullHistoryBackfillManager:
             if item.download_index < len(item.missing_ranges):
                 current = item.missing_ranges[item.download_index]
                 self._set_range(item, current)
+                item.attempted_by_timeframe[current.timeframe] = item.attempted_by_timeframe.get(current.timeframe, 0) + 1
                 self._new_request(item, "backfill")
                 return
             details = {
@@ -571,6 +591,7 @@ class FullHistoryBackfillManager:
                 {"instrument": item.instrument, "timeframes": timeframe_summary, **details},
             )
             empty_timeframes = [name for name in ("1m", "1h", "1d") if timeframe_summary[name]["received"] == 0]
+            all_empty = len(empty_timeframes) == 3
             if empty_timeframes:
                 self._emit(
                     "backfill.instrument_history_incomplete",
@@ -579,6 +600,18 @@ class FullHistoryBackfillManager:
                     {"instrument": item.instrument, "missing_timeframes": empty_timeframes,
                      "timeframes": timeframe_summary, **details},
                 )
+            if all_empty:
+                item.error = "No MT5 history returned for M1, H1, or D1"
+                item.phase = "completed"
+                item.status = "completed"
+                self._emit(
+                    "backfill.instrument_failed",
+                    f"Full-history download failed for {item.instrument}: MT5 returned no M1, H1, or D1 bars; candle repair skipped",
+                    job.provider_key,
+                    {"instrument": item.instrument, "provider_symbol": item.provider_symbol,
+                     "reason": "no_source_history", "timeframes": timeframe_summary, **details},
+                )
+                return
             self._emit(
                 "backfill.download_completed",
                 f"Downloaded history saved for {item.instrument}; starting candle repair",
@@ -598,6 +631,9 @@ class FullHistoryBackfillManager:
     def _timeframe_summary(item: InstrumentProgress) -> dict[str, dict[str, int]]:
         return {
             timeframe: {
+                "planned": item.planned_by_timeframe.get(timeframe, 0),
+                "attempted": item.attempted_by_timeframe.get(timeframe, 0),
+                "unavailable": item.unavailable_by_timeframe.get(timeframe, 0),
                 "received": item.received_by_timeframe.get(timeframe, 0),
                 "stored": item.stored_by_timeframe.get(timeframe, 0),
                 "skipped": item.skipped_by_timeframe.get(timeframe, 0),
@@ -611,9 +647,11 @@ class FullHistoryBackfillManager:
         labels = (("1m", "M1"), ("1h", "H1"), ("1d", "D1"))
         return "; ".join(
             f"{label} received={summary[key]['received']:,}, stored={summary[key]['stored']:,}, "
-            f"skipped={summary[key]['skipped']:,}, ranges={summary[key]['ranges']:,}"
+            f"skipped={summary[key]['skipped']:,}, planned={summary[key]['planned']:,}, "
+            f"attempted={summary[key]['attempted']:,}, unavailable={summary[key]['unavailable']:,}"
             for key, label in labels
         )
+
 
     @staticmethod
     def _simple_source_ranges(now: datetime) -> list[PlannedRange]:
@@ -766,8 +804,14 @@ class FullHistoryBackfillManager:
             job.active_index += 1
         if job.active_index >= len(job.instruments) and job.status == "running":
             totals = self._totals(job)
-            self._emit("backfill.download_all_completed", "All planned history downloads completed", job.provider_key,
-                       {"job_id": job.job_id, **totals})
+            failed_instruments = [item.instrument for item in job.instruments if item.error]
+            event_name = "backfill.download_all_completed_with_failures" if failed_instruments else "backfill.download_all_completed"
+            message = (
+                f"History download finished with {len(failed_instruments)} instrument failure(s)"
+                if failed_instruments else "All planned history downloads completed"
+            )
+            self._emit(event_name, message, job.provider_key,
+                       {"job_id": job.job_id, "failed_instruments": failed_instruments, **totals})
             if self._on_download_completed is None:
                 job.status = "completed"
                 job.phase = "completed"
@@ -850,6 +894,8 @@ class FullHistoryBackfillManager:
             "candles_received": sum(item.bars_received for item in job.instruments),
             "candles_stored": sum(item.bars_inserted for item in job.instruments),
             "candles_skipped": sum(max(0, item.bars_received - item.bars_inserted) for item in job.instruments),
+            "instrument_failures": sum(1 for item in job.instruments if item.error),
+            "failed_instruments": [item.instrument for item in job.instruments if item.error],
         }
 
     @staticmethod
@@ -880,6 +926,9 @@ class FullHistoryBackfillManager:
                 "stored_by_timeframe": dict(item.stored_by_timeframe),
                 "skipped_by_timeframe": dict(item.skipped_by_timeframe),
                 "ranges_by_timeframe": dict(item.ranges_by_timeframe),
+                "planned_by_timeframe": dict(item.planned_by_timeframe),
+                "attempted_by_timeframe": dict(item.attempted_by_timeframe),
+                "unavailable_by_timeframe": dict(item.unavailable_by_timeframe),
                 "error": item.error, "retry_count": item.retry_count,
                 "last_error_code": item.last_error_code, "request_kind": item.request_kind,
                 "request_id": item.current_request_id,

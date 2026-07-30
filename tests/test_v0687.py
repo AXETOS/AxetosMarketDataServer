@@ -8,7 +8,7 @@ from axetos_market_data.bridge import BridgeCandle, BridgeCandlesRequest
 def test_bridge_uploads_one_based_chunk_indexes() -> None:
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
     assert "chunk_index + 1, chunk_count, items" in source
-    assert '#property version   "3.05"' in source
+    assert '#property version   "3.06"' in source
 
 
 def test_single_chunk_startup_refresh_is_accepted() -> None:
@@ -36,6 +36,6 @@ def test_single_chunk_startup_refresh_is_accepted() -> None:
 
 
 def test_release_metadata() -> None:
-    assert __version__ == "0.68.7"
-    assert 'version = "0.68.7"' in Path("pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.68.7" in Path("README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.68.8"
+    assert 'version = "0.68.8"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.68.8" in Path("README.md").read_text(encoding="utf-8")

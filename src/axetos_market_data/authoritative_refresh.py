@@ -17,6 +17,7 @@ class _PendingRefresh:
     interval: str
     request_id: str
     chunk_count: int
+    index_base: int
     chunks: dict[int, list[BridgeCandle]] = field(default_factory=dict)
 
 
@@ -38,8 +39,20 @@ class AuthoritativeRefreshBuffer:
             raise ValueError("Authoritative refresh requires a request ID")
         if request.chunk_count < 1:
             raise ValueError("Authoritative refresh chunk count must be positive")
-        if request.chunk_index < 1 or request.chunk_index > request.chunk_count:
-            raise ValueError("Authoritative refresh chunk index is outside the declared range")
+        # Bridge v3.04 and earlier used zero-based chunk indexes while logging them
+        # as one-based. Bridge v3.05 uses one-based indexes. Accept both protocols
+        # and normalize them internally so an older compiled EA cannot break startup.
+        if request.chunk_index == 0:
+            incoming_base = 0
+            normalized_index = 1
+        elif 1 <= request.chunk_index <= request.chunk_count:
+            incoming_base = 1
+            normalized_index = request.chunk_index
+        else:
+            raise ValueError(
+                f"Authoritative refresh chunk index {request.chunk_index} is outside "
+                f"the supported 0..{request.chunk_count - 1} or 1..{request.chunk_count} ranges"
+            )
 
         now = datetime.now(UTC)
         key = (request.provider_key, request.request_id)
@@ -56,6 +69,7 @@ class AuthoritativeRefreshBuffer:
                     interval=request.interval,
                     request_id=request.request_id,
                     chunk_count=request.chunk_count,
+                    index_base=incoming_base,
                 )
                 self._pending[key] = state
             else:
@@ -75,8 +89,14 @@ class AuthoritativeRefreshBuffer:
                 )
                 if identity != incoming_identity:
                     raise ValueError("Authoritative refresh chunk metadata changed during upload")
+                if state.index_base != incoming_base:
+                    raise ValueError("Authoritative refresh chunk index base changed during upload")
 
-            state.chunks[request.chunk_index] = list(request.candles)
+            if state.index_base == 0:
+                if request.chunk_index < 0 or request.chunk_index >= request.chunk_count:
+                    raise ValueError("Zero-based authoritative refresh chunk index is outside the declared range")
+                normalized_index = request.chunk_index + 1
+            state.chunks[normalized_index] = list(request.candles)
             if len(state.chunks) != state.chunk_count:
                 return None
 

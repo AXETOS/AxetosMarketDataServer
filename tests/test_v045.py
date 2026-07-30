@@ -11,9 +11,9 @@ from axetos_market_data.web import create_app
 ROOT = Path(__file__).resolve().parents[1]
 
 def test_release_metadata():
-    assert __version__ == "0.68.7"
-    assert 'version = "0.68.7"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.68.7" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.68.8"
+    assert 'version = "0.68.8"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.68.8" in (ROOT / "README.md").read_text(encoding="utf-8")
 
 def test_compatibility_candles_returns_server_rows(tmp_path):
     db = tmp_path / "market.sqlite"

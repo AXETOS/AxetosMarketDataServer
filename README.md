@@ -1,6 +1,6 @@
 # Axetos Market Data Server
 
-## Version 0.68.7
+## Version 0.68.8
 
 - Fixed MT5 candle chunk numbering: uploads now use the server protocol's one-based `chunkIndex` values.
 - Startup ten-minute authoritative refreshes no longer fail with HTTP 400 on their first chunk.

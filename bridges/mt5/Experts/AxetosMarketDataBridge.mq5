@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "3.05"
+#property version   "3.06"
 #property strict
 #property description "Passive MT5 adapter controlled entirely by Axetos Market Data Server."
 
@@ -402,7 +402,7 @@ bool HttpPost(string path, string payload, int timeout_ms, string &response)
    int error_code = GetLastError();
    response = ArraySize(result) > 0 ? CharArrayToString(result, 0, ArraySize(result), CP_UTF8) : "";
    if(status >= 200 && status < 300) return true;
-   PrintFormat("Axetos MT5 Bridge: POST failed path=%s HTTP=%d error=%d", path, status, error_code);
+   PrintFormat("Axetos MT5 Bridge: POST failed path=%s HTTP=%d error=%d response=%s", path, status, error_code, response);
    return false;
 }
 

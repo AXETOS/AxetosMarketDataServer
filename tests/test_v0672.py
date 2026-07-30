@@ -49,10 +49,10 @@ def test_authoritative_refresh_accepts_duplicate_chunk_delivery() -> None:
 
 
 def test_v0672_metadata_and_authoritative_reset_source() -> None:
-    assert __version__ == "0.68.7"
-    assert 'version = "0.68.7"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    assert __version__ == "0.68.8"
+    assert 'version = "0.68.8"' in Path("pyproject.toml").read_text(encoding="utf-8")
     readme = Path("README.md").read_text(encoding="utf-8")
-    assert "## Version 0.68.7" in readme
+    assert "## Version 0.68.8" in readme
     source = Path("src/axetos_market_data/web.py").read_text(encoding="utf-8")
     assert "authoritative_refreshes.add(request)" in source
     assert '"skipped": 0' in source

@@ -25,9 +25,9 @@ def _discover(client: TestClient) -> None:
 
 
 def test_release_metadata() -> None:
-    assert __version__ == "0.68.7"
-    assert 'version = "0.68.7"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.68.7" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.68.8"
+    assert 'version = "0.68.8"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.68.8" in (ROOT / "README.md").read_text(encoding="utf-8")
 
 
 def test_enabled_symbols_plain_text_contract(tmp_path) -> None:
@@ -58,6 +58,6 @@ def test_optional_bridge_control_endpoints_exist(tmp_path) -> None:
 
 def test_bridge_http_4xx_does_not_trigger_transport_backoff() -> None:
     source = BRIDGE.read_text(encoding="utf-8")
-    assert '#property version   "3.05"' in source
+    assert '#property version   "3.06"' in source
     assert "retry_after" not in source
     assert "HttpGet" in source and "HttpPost" in source

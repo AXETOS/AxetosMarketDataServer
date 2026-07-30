@@ -1,3 +1,10 @@
+## Version 0.68.1
+
+- Removed the provider-card **Restart**, **Download full MT5 history**, **Rebuild clean 7d**, **Repair gaps**, and **Repair last 24h (M1)** buttons.
+- On every server startup, each enabled auto-start MT5 provider waits for a connected terminal and then downloads the latest ten completed M1 candles for every configured instrument.
+- The ten-minute startup window uses the authoritative replacement path: the complete response is buffered first, then the exact stored window is overwritten atomically. Existing candles outside that window are untouched.
+- Every startup refresh still uses the explicit MT5 terminal-time handshake before `CopyRates`, so the requested window is translated against that terminal's current broker clock.
+
 ## Version 0.68.0
 
 - Added an explicit per-command MT5 terminal-time handshake. Before every `CopyRates` operation, the server issues a `TIME` command and the bridge reports `TimeTradeServer()`.

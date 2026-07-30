@@ -6,9 +6,9 @@ from axetos_market_data import __version__
 def test_v0621_metadata_and_readme_order() -> None:
     root = Path(__file__).resolve().parents[1]
     readme = (root / "README.md").read_text(encoding="utf-8")
-    assert __version__ == "0.68.0"
+    assert __version__ == "0.68.1"
     assert readme.startswith("# Axetos Market Data Server\n")
-    assert readme.index("## Version 0.68.0") < readme.index("## Version 0.62.0")
+    assert readme.index("## Version 0.68.1") < readme.index("## Version 0.62.0")
     assert "Dedicated history and candle-repair processes" in readme
 
 

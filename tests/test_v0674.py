@@ -45,6 +45,6 @@ def test_only_confirmed_live_provider_symbol_drives_quote_and_temporary_candle(t
 
 
 def test_v0674_metadata() -> None:
-    assert __version__ == "0.68.9"
-    assert 'version = "0.68.9"' in Path("pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.68.9" in Path("README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.68.10"
+    assert 'version = "0.68.10"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.68.10" in Path("README.md").read_text(encoding="utf-8")

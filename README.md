@@ -1,5 +1,9 @@
 # Axetos Market Data Server
 
+## Version 0.68.10
+
+Version 0.68.10 makes the automatic startup refresh intentionally M1-only. Each instrument now emits one compact operational entry with requested, received, stored, skipped, and result counts. The startup workflow atomically overwrites only the latest ten completed M1 candles and does not launch higher-timeframe candle repair or print irrelevant H1/D1 summaries. MT5 bridge v3.06 now displays the same v3.06 version in its startup Journal message as its source metadata.
+
 ## Version 0.68.9
 
 - Fixed startup authoritative M1 replacement failures that returned HTTP 503 with `UNIQUE constraint failed: candles.provider, candles.instrument, candles.timeframe, candles.open_time_utc`.

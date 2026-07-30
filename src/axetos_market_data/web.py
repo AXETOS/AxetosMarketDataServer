@@ -313,6 +313,21 @@ def create_app(
             )
             return
 
+        # Startup refresh is deliberately limited to replacing the last ten official
+        # M1 candles. It must not run hierarchy repair or emit H1/D1 repair events.
+        if workflow == "startup_m1":
+            full_history.instrument_verified(
+                provider, job_id, instrument, {
+                    "workflow": workflow,
+                    "bars_returned": int(details.get("candles_received", 0)),
+                    "timestamps_upserted": int(details.get("candles_stored", 0)),
+                    "timestamps_untouched": int(details.get("candles_skipped", 0)),
+                    "higher_timeframes_rebuilt": False,
+                    "status": "COMPLETE",
+                },
+            )
+            return
+
         def run() -> None:
             completion: dict[str, object] = {
                 "workflow": workflow,

@@ -25,7 +25,7 @@ int OnInit()
    EventSetTimer(1);
    SendHeartbeat();
    RefreshTickSymbols();
-   PrintFormat("Axetos MT5 Bridge v3.05 started; provider=%s server=%s", InpProviderKey, InpServerUrl);
+   PrintFormat("Axetos MT5 Bridge v3.06 started; provider=%s server=%s", InpProviderKey, InpServerUrl);
    return INIT_SUCCEEDED;
 }
 

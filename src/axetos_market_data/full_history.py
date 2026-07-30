@@ -582,6 +582,37 @@ class FullHistoryBackfillManager:
                 "candles_skipped": max(0, item.bars_received - item.bars_inserted),
                 "planned_ranges": len(item.missing_ranges), "bad_ranges": len(item.bad_ranges),
             }
+            if job.workflow == "startup_m1":
+                requested = sum(
+                    max(0, int((value.end - value.start).total_seconds() // 60) + 1)
+                    for value in item.missing_ranges
+                    if value.timeframe == "1m"
+                )
+                received = int(item.received_by_timeframe.get("1m", item.bars_received))
+                stored = int(item.stored_by_timeframe.get("1m", item.bars_inserted))
+                skipped = max(0, received - stored)
+                result = "success" if received == requested and stored == received and skipped == 0 else "partial"
+                self._emit(
+                    "startup.m1_refresh_completed",
+                    f"{job.provider_key} · {item.instrument} · startup M1 refresh\n"
+                    f"requested={requested}, received={received}, stored={stored}, "
+                    f"skipped={skipped}, result={result}",
+                    job.provider_key,
+                    {
+                        "instrument": item.instrument, "workflow": job.workflow,
+                        "requested": requested, "received": received, "stored": stored,
+                        "skipped": skipped, "result": result, **details,
+                    },
+                )
+                if self._on_instrument_completed is not None:
+                    item.phase = "verifying"
+                    item.status = "verifying"
+                    self._on_instrument_completed(job.provider_key, item.instrument, details)
+                else:
+                    item.phase = "completed"
+                    item.status = "completed"
+                return
+
             timeframe_summary = self._timeframe_summary(item)
             summary_text = self._format_timeframe_summary(timeframe_summary)
             self._emit(

@@ -4,15 +4,16 @@ from pathlib import Path
 
 from axetos_market_data.domain import Candle
 from axetos_market_data.full_history import FullHistoryBackfillManager
+from history_test_helpers import complete_history_discovery
 from axetos_market_data.hierarchical_repair import HierarchicalCandleRepair
 from axetos_market_data.history_worker import _compress_flat_m1
 
 
-def test_simple_history_starts_with_direct_m1_backfill() -> None:
+def test_simple_history_checks_availability_before_m1_backfill() -> None:
     now = datetime(2026, 7, 28, tzinfo=UTC)
     manager = FullHistoryBackfillManager(lambda *_: 0, now_factory=lambda: now)
     manager.start("P", [("EURUSD", "EUR/USD")])
-    request = manager.next_request("P").split("|")
+    request = complete_history_discovery(manager, "P").split("|")
     assert request[:3] == ["BACKFILL", "EURUSD", "1m"]
     assert datetime.fromisoformat(request[4]) <= now
     assert manager.next_request("P") == ""

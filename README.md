@@ -1,13 +1,15 @@
 # Axetos Market Data Server
 
-## Version 0.68.12
+## Version 1.0.0
 
-- Full-history backfill now queries MT5 availability for M1, H1, and D1 before creating any download ranges.
-- Each timeframe starts at the later of its MT5 earliest candle and the ten-year retention limit.
-- M1 is then downloaded month-by-month, H1 year-by-year, and D1 as one available-range request.
-- Unavailable years are no longer probed blindly.
-
-
+- Finalized automatic runtime candle lifecycle for 15m, 1h, 1d, 1w, and 1mo.
+- Completed aggregate candles are persisted automatically when their server-time bucket closes.
+- The active aggregate candle is generated only for chart display from stored completed source candles plus the current live Bid and is never persisted.
+- 15m, 1h, and 1d use official M1 source candles; 1w and 1mo use completed D1 candles plus the active temporary daily candle.
+- Startup remains limited to atomically overwriting the latest ten completed M1 candles and does not run hierarchy repair.
+- Full-history planning queries MT5 availability for M1, H1, and D1 before creating download ranges.
+- Temporary MT5 candles now use Bid so they align with MT5 CopyRates candles.
+- Added regression coverage for temporary and finalized 15m and 1h runtime candles.
 
 ## Version 0.68.12
 

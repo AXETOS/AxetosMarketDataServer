@@ -780,6 +780,7 @@ def create_app(
                 replaced = bridge.candles(
                     assembled,
                     replace_window=(context["from_utc"], context["to_utc"]),
+                    update_runtime_aggregates=str(context.get("workflow")) != "startup_m1",
                 )
             except (ValueError, RuntimeError, TimeoutError) as exc:
                 authoritative_refreshes.discard(request.provider_key, request.request_id or "")
@@ -1518,13 +1519,14 @@ def create_app(
             if available_provider is not None and available_provider != active_provider:
                 active_provider = available_provider
                 values = store.read_candles(instrument, timeframe, limit, active_provider, from_utc, to_utc)
-        if timeframe == "1m" and active_provider is not None:
-            temporary = bridge.temporary_minute(active_provider, instrument)
+        if active_provider is not None:
+            temporary = bridge.temporary_candle(active_provider, instrument, timeframe)
             if temporary is not None:
                 in_window = (from_utc is None or temporary.open_time >= ensure_server_local(from_utc)) and (
                     to_utc is None or temporary.open_time <= ensure_server_local(to_utc)
                 )
-                if in_window and not any(item.open_time == temporary.open_time for item in values):
+                if in_window:
+                    values = [item for item in values if item.open_time != temporary.open_time]
                     values = [*values, temporary]
                     if len(values) > limit:
                         values = values[-limit:]

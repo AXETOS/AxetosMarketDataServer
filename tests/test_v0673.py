@@ -29,10 +29,10 @@ def test_server_builds_ephemeral_current_minute_for_chart(tmp_path) -> None:
 
     assert payload["count"] == 1
     candle = payload["candles"][0]
-    assert candle["open"] == "101"
-    assert candle["high"] == "105"
-    assert candle["low"] == "101"
-    assert candle["close"] == "105"
+    assert candle["open"] == "100"
+    assert candle["high"] == "104"
+    assert candle["low"] == "100"
+    assert candle["close"] == "104"
     assert candle["complete"] is False
     assert app.state.store.statistics()["ticks"] == 0
     assert app.state.store.statistics()["candles"] == 0
@@ -51,12 +51,12 @@ def test_new_minute_replaces_ephemeral_state_without_persistence(tmp_path) -> No
     temporary = bridge.temporary_minute("ICMarkets.MT5", "EUR/USD")
     assert temporary is not None
     assert temporary.open_time.minute == (start.minute + 1) % 60
-    assert temporary.open == Decimal("1.1011")
+    assert temporary.open == Decimal("1.1010")
     assert temporary.complete is False
     assert app.state.store.statistics()["candles"] == 0
 
 
 def test_v0673_metadata() -> None:
-    assert __version__ == "0.68.12"
-    assert 'version = "0.68.12"' in Path("pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.68.12" in Path("README.md").read_text(encoding="utf-8")
+    assert __version__ == "1.0.0"
+    assert 'version = "1.0.0"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 1.0.0" in Path("README.md").read_text(encoding="utf-8")

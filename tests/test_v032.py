@@ -8,9 +8,9 @@ from axetos_market_data.storage import MarketDataStore
 
 
 def test_release_metadata_and_readme():
-    assert __version__ == "0.68.12"
+    assert __version__ == "1.0.0"
     readme = Path("README.md").read_text(encoding="utf-8")
-    assert "## Version 0.68.12" in readme
+    assert "## Version 1.0.0" in readme
     assert "configured, MT5-selected, monitored, and stored instruments" in readme
 
 

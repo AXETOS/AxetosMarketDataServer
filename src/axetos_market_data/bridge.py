@@ -125,7 +125,7 @@ class TemporaryMinuteCandle:
     tick_count: int = 1
 
     def apply(self, tick: Tick) -> None:
-        price = tick.market_price
+        price = tick.bid
         self.high = max(self.high, price)
         self.low = min(self.low, price)
         self.current_price = price
@@ -365,7 +365,7 @@ class Mt5BridgeService:
                 return False
             self._last_ingested[key] = tick.timestamp
             minute = bucket_start(tick.timestamp, "1m")
-            price = tick.market_price
+            price = tick.bid
             current = self._temporary_minutes.get(key)
             if current is None or current.timestamp != minute:
                 self._temporary_minutes[key] = TemporaryMinuteCandle(
@@ -390,9 +390,27 @@ class Mt5BridgeService:
             value = self._temporary_minutes.get((provider, instrument))
             return None if value is None else value.as_candle()
 
+    def temporary_candle(self, provider: str, instrument: str, timeframe: str) -> Candle | None:
+        """Return the open server-generated candle for chart display only."""
+        with self._ingest_lock:
+            value = self._temporary_minutes.get((provider, instrument))
+            if value is None:
+                return None
+            if timeframe == "1m":
+                return value.as_candle()
+            reference_time = value.last_tick_time
+            current_bid = value.current_price
+        from .aggregation import RUNTIME_DERIVED_TIMEFRAMES, CandleAggregator
+        if timeframe not in RUNTIME_DERIVED_TIMEFRAMES:
+            return None
+        return CandleAggregator(self.store).build_temporary(
+            instrument, timeframe, provider, reference_time, current_bid
+        )
+
     def candles(
         self, request: BridgeCandlesRequest, *, replace_flatline: bool = False, replace_all: bool = False,
         replace_window: tuple[datetime, datetime] | None = None,
+        update_runtime_aggregates: bool = True,
     ) -> int:
         """Import provider-confirmed MT5 bars.
 
@@ -439,11 +457,18 @@ class Mt5BridgeService:
             )
             if request.request_id or effective_replace_all else self.store.upsert_candles(values)
         )
-        if values and not request.request_id:
-            from .aggregation import CANONICAL_DERIVED_TIMEFRAMES, CandleAggregator
+        if values and update_runtime_aggregates:
+            from .aggregation import CandleAggregator
             aggregator = CandleAggregator(self.store)
-            for timeframe in CANONICAL_DERIVED_TIMEFRAMES:
-                aggregator.aggregate(instrument, timeframe, request.provider_key)
+            finalized = aggregator.finalize_closed_buckets(
+                instrument, request.provider_key, interval,
+                [item.open_time for item in values], server_now(),
+            )
+            finalized_days = [item.open_time for item in finalized if item.timeframe == "1d"]
+            if finalized_days:
+                aggregator.finalize_closed_buckets(
+                    instrument, request.provider_key, "1d", finalized_days, server_now(),
+                )
         return written
 
     @staticmethod

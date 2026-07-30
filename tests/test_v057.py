@@ -3,11 +3,12 @@ from decimal import Decimal
 from pathlib import Path
 from axetos_market_data.domain import Candle
 from axetos_market_data.full_history import FullHistoryBackfillManager
+from history_test_helpers import complete_history_discovery
 from axetos_market_data.storage import MarketDataStore
 
 def test_full_history_directly_downloads_source_ranges(tmp_path):
     now=datetime(2026,7,27,tzinfo=UTC); m=FullHistoryBackfillManager(lambda *_:0,now_factory=lambda:now)
-    m.start('P',[('EURUSD','EUR/USD')]); assert m.next_request('P').startswith('BACKFILL|EURUSD|1m|')
+    m.start('P',[('EURUSD','EUR/USD')]); assert complete_history_discovery(m, 'P').startswith('BACKFILL|EURUSD|1m|')
 
 def test_insert_candles_missing_preserves_existing(tmp_path):
     s=MarketDataStore(tmp_path/'x.sqlite'); s.initialize(); t=datetime(2026,7,1,tzinfo=UTC)

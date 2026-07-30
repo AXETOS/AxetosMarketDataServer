@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from axetos_market_data.aggregation import CandleAggregator
+from axetos_market_data.clock import server_now
 from axetos_market_data.candle_builder import CandleBuilder
 from axetos_market_data.domain import Candle, Tick
 from axetos_market_data.storage import MarketDataStore
@@ -31,12 +32,12 @@ def test_connected_minute_uses_previous_close_but_gap_detaches(tmp_path):
     assert any(item.open_time == rows[-2].open_time + timedelta(minutes=1) for item in rows)
 
 
-def test_week_and_month_are_built_from_hour_candles(tmp_path):
+def test_week_and_month_are_built_from_daily_candles(tmp_path):
     store = MarketDataStore(tmp_path / "market.sqlite")
     store.initialize()
-    at = datetime(2026, 7, 6, 10, tzinfo=timezone(timedelta(hours=3)))
-    store.upsert_candle(Candle("P", "BTC/USD", "1h", at, Decimal("10"), Decimal("12"), Decimal("9"), Decimal("11"), 1))
-    store.upsert_candle(Candle("P", "BTC/USD", "1h", at + timedelta(hours=1), Decimal("11"), Decimal("14"), Decimal("10"), Decimal("13"), 1))
+    at = server_now().replace(year=2026, month=7, day=6, hour=0, minute=0, second=0, microsecond=0)
+    store.upsert_candle(Candle("P", "BTC/USD", "1d", at, Decimal("10"), Decimal("12"), Decimal("9"), Decimal("11"), 1))
+    store.upsert_candle(Candle("P", "BTC/USD", "1d", at + timedelta(days=1), Decimal("11"), Decimal("14"), Decimal("10"), Decimal("13"), 1))
     agg = CandleAggregator(store)
     assert agg.aggregate("BTC/USD", "1w", "P") == 1
     assert agg.aggregate("BTC/USD", "1mo", "P") == 1

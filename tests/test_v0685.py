@@ -18,9 +18,17 @@ def test_full_history_logs_per_timeframe_summary() -> None:
         if not command:
             break
         parts = command.split("|")
-        timeframe, request_id = parts[2], parts[-1]
+        action, timeframe, request_id = parts[0], parts[2], parts[-1]
         count = {"1m": 10, "1h": 20, "1d": 30}[timeframe]
-        manager.batch_result("P", request_id, count, count, True)
+        if action == "DISCOVER":
+            manager.availability_result(
+                "P", request_id,
+                earliest=datetime.fromisoformat(parts[3]),
+                latest=datetime.fromisoformat(parts[4]),
+                count=count,
+            )
+        else:
+            manager.batch_result("P", request_id, count, count, True)
 
     summaries = [entry for entry in events if entry[0] == "backfill.instrument_download_summary"]
     assert len(summaries) == 1

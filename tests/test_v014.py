@@ -9,7 +9,7 @@ from axetos_market_data.web import create_app
 
 
 def test_version_014():
-    assert __version__ == "0.68.12"
+    assert __version__ == "1.0.0"
 
 
 def test_operational_event_csv_export_respects_filters(tmp_path):

@@ -147,18 +147,16 @@ class FullHistoryBackfillManager:
             instruments: list[InstrumentProgress] = []
             for symbol, instrument in symbols:
                 item = InstrumentProgress(symbol, instrument, provider_key)
-                item.phase = "download"
-                item.scan_phase = "download"
-                item.discovery_complete = True
+                item.phase = "discovery"
+                item.scan_phase = "discovery"
+                item.discovery_complete = False
                 item.status = "queued"
-                item.missing_ranges = self._simple_source_ranges(now)
-                item.planned_by_timeframe = self._count_by_timeframe(item.missing_ranges)
                 instruments.append(item)
             job = FullHistoryJob(
                 job_id=uuid.uuid4().hex,
                 provider_key=provider_key,
                 created_at=now,
-                phase="download",
+                phase="discovery",
                 instruments=instruments,
             )
             self._jobs[job.job_id] = job
@@ -167,17 +165,6 @@ class FullHistoryBackfillManager:
                        {"job_id": job.job_id, "instruments": len(symbols),
                         "timeframes": ["1m", "1h", "1d"],
                         "window_years": 10})
-            for item in instruments:
-                self._emit("backfill.instrument_plan_created",
-                           f"History plan for {item.instrument}: "
-                           f"M1 ranges={item.planned_by_timeframe.get('1m', 0)}, "
-                           f"H1 ranges={item.planned_by_timeframe.get('1h', 0)}, "
-                           f"D1 ranges={item.planned_by_timeframe.get('1d', 0)}",
-                           provider_key, {"job_id": job.job_id, "instrument": item.instrument,
-                                          "provider_symbol": item.provider_symbol,
-                                          "planned_ranges": dict(item.planned_by_timeframe),
-                                          "from_utc": item.missing_ranges[0].start.isoformat() if item.missing_ranges else None,
-                                          "to_utc": item.missing_ranges[-1].end.isoformat() if item.missing_ranges else None})
             return self._view(job)
 
     def start_targeted(
@@ -452,45 +439,77 @@ class FullHistoryBackfillManager:
         provider_count: int, local_count: int,
     ) -> str:
         boundary = earliest if provider_count > 0 and earliest is not None else None
+        available_latest = latest if provider_count > 0 and latest is not None else None
         item.discovery_boundaries[timeframe] = boundary
-        item.discovery_latest[timeframe] = latest if provider_count > 0 else None
+        item.discovery_latest[timeframe] = available_latest
         item.discovery_counts[timeframe] = provider_count
         item.discovery_local_counts[timeframe] = local_count
-        complete = self._coverage_complete(job.provider_key, item.instrument, timeframe,
-                                           start, end, earliest, latest, provider_count, local_count)
-        if complete:
-            item.discovery_complete_timeframes.add(timeframe)
-            item.ranges_skipped_existing += 1
-        elif boundary is not None and latest is not None:
-            item.planning_queue.append(PlannedRange(timeframe, boundary, latest, 0))
-        else:
-            self._mark_bad(item, PlannedRange(timeframe, start, end, 0), "no_provider_history", None)
-
         item.discovery_index += 1
         item.last_result = (
-            f"discovered {timeframe}: provider={provider_count}, local={local_count}, "
-            f"complete={complete}, earliest={boundary.isoformat() if boundary else 'unavailable'}"
+            f"availability {timeframe}: count={provider_count}, "
+            f"earliest={boundary.isoformat() if boundary else 'unavailable'}, "
+            f"latest={available_latest.isoformat() if available_latest else 'unavailable'}"
         )
+
         if item.discovery_index < len(self._DISCOVERY_TIMEFRAMES):
             self._configure_discovery(item)
-        else:
-            item.discovery_complete = True
-            item.phase = "planning"
-            item.scan_phase = "planning"
-            job.phase = "planning"
-            self._emit("backfill.discovery_completed", "Ten-year history discovery completed", job.provider_key, {
-                "job_id": job.job_id, "instrument": item.instrument,
-                "provider_counts": dict(item.discovery_counts),
-                "local_counts": dict(item.discovery_local_counts),
-                "complete_timeframes": sorted(item.discovery_complete_timeframes),
-                "planning_roots": len(item.planning_queue),
-            })
-            item.status = "queued"
+            return (f"AVAILABLE|{provider_count}|{boundary.isoformat()}|{available_latest.isoformat()}"
+                    if boundary and available_latest else f"UNAVAILABLE|{provider_count}|{local_count}")
 
-        if boundary is None:
-            return f"UNAVAILABLE|{provider_count}|{local_count}"
-        return (f"DISCOVERED_COMPLETE|{provider_count}|{local_count}|{boundary.isoformat()}" if complete
-                else f"DISCOVERED_MISSING|{provider_count}|{local_count}|{boundary.isoformat()}")
+        item.discovery_complete = True
+        now = self._now_factory().astimezone(UTC).replace(second=0, microsecond=0)
+        item.missing_ranges = self._source_ranges_from_availability(
+            now, item.discovery_boundaries, item.discovery_latest
+        )
+        item.planned_by_timeframe = self._count_by_timeframe(item.missing_ranges)
+        item.phase = "download"
+        item.scan_phase = "download"
+        item.status = "queued"
+        job.phase = "download"
+
+        availability_text = ", ".join(
+            f"{tf.upper()} earliest="
+            f"{item.discovery_boundaries.get(tf).isoformat() if item.discovery_boundaries.get(tf) else 'unavailable'}"
+            for tf in self._DISCOVERY_TIMEFRAMES
+        )
+        self._emit(
+            "backfill.instrument_availability_checked",
+            f"MT5 history availability for {item.instrument}: {availability_text}",
+            job.provider_key,
+            {
+                "job_id": job.job_id,
+                "instrument": item.instrument,
+                "provider_symbol": item.provider_symbol,
+                "earliest_by_timeframe": {
+                    key: value.isoformat() if value else None
+                    for key, value in item.discovery_boundaries.items()
+                },
+                "latest_by_timeframe": {
+                    key: value.isoformat() if value else None
+                    for key, value in item.discovery_latest.items()
+                },
+                "provider_counts": dict(item.discovery_counts),
+            },
+        )
+        self._emit(
+            "backfill.instrument_plan_created",
+            f"History plan for {item.instrument}: "
+            f"M1 ranges={item.planned_by_timeframe.get('1m', 0)}, "
+            f"H1 ranges={item.planned_by_timeframe.get('1h', 0)}, "
+            f"D1 ranges={item.planned_by_timeframe.get('1d', 0)}",
+            job.provider_key,
+            {
+                "job_id": job.job_id,
+                "instrument": item.instrument,
+                "provider_symbol": item.provider_symbol,
+                "planned_ranges": dict(item.planned_by_timeframe),
+                "from_utc": item.missing_ranges[0].start.isoformat() if item.missing_ranges else None,
+                "to_utc": item.missing_ranges[-1].end.isoformat() if item.missing_ranges else None,
+            },
+        )
+        if not item.missing_ranges:
+            item.error = "MT5 reported no M1, H1, or D1 history in the ten-year window"
+        return "DISCOVERY_COMPLETE"
 
     def _handle_planning(
         self, job: FullHistoryJob, item: InstrumentProgress, timeframe: str,
@@ -683,6 +702,44 @@ class FullHistoryBackfillManager:
             for key, label in labels
         )
 
+
+    @classmethod
+    def _source_ranges_from_availability(
+        cls,
+        now: datetime,
+        earliest_by_timeframe: dict[str, datetime | None],
+        latest_by_timeframe: dict[str, datetime | None],
+    ) -> list[PlannedRange]:
+        ten_year_start = now - timedelta(days=3650)
+        ranges: list[PlannedRange] = []
+        for timeframe in cls._DISCOVERY_TIMEFRAMES:
+            earliest = earliest_by_timeframe.get(timeframe)
+            latest = latest_by_timeframe.get(timeframe)
+            if earliest is None or latest is None:
+                continue
+            start = max(ten_year_start, earliest.astimezone(UTC))
+            end = min(now, latest.astimezone(UTC))
+            if start > end:
+                continue
+            if timeframe == "1m":
+                cursor = start
+                while cursor <= end:
+                    boundary = (cursor.replace(day=1) + timedelta(days=32)).replace(day=1)
+                    part_end = min(end, boundary - timedelta(minutes=1))
+                    if part_end >= cursor:
+                        ranges.append(PlannedRange("1m", cursor, part_end, 0))
+                    cursor = boundary
+            elif timeframe == "1h":
+                cursor = start
+                while cursor <= end:
+                    boundary = datetime(cursor.year + 1, 1, 1, tzinfo=UTC)
+                    part_end = min(end, boundary - timedelta(hours=1))
+                    if part_end >= cursor:
+                        ranges.append(PlannedRange("1h", cursor, part_end, 0))
+                    cursor = boundary
+            else:
+                ranges.append(PlannedRange("1d", start, end, 0))
+        return ranges
 
     @staticmethod
     def _simple_source_ranges(now: datetime) -> list[PlannedRange]:

@@ -44,6 +44,6 @@ def test_only_confirmed_history_symbol_can_write_candles(tmp_path) -> None:
 
 
 def test_v0675_metadata() -> None:
-    assert __version__ == "0.68.11"
-    assert 'version = "0.68.11"' in Path("pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.68.11" in Path("README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.68.12"
+    assert 'version = "0.68.12"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.68.12" in Path("README.md").read_text(encoding="utf-8")

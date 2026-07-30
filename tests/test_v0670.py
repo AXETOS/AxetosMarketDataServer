@@ -4,9 +4,9 @@ from axetos_market_data import __version__
 
 
 def test_release_metadata() -> None:
-    assert __version__ == "0.68.11"
-    assert 'version = "0.68.11"' in Path("pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.68.11" in Path("README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.68.12"
+    assert 'version = "0.68.12"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.68.12" in Path("README.md").read_text(encoding="utf-8")
 
 
 def test_bridge_is_passive_question_answer_adapter() -> None:

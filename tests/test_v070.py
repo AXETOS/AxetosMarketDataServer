@@ -8,7 +8,7 @@ def test_health_metrics_and_prometheus_endpoint(tmp_path):
     with TestClient(app) as client:
         health = client.get("/api/health")
         assert health.status_code == 200
-        assert health.json()["version"] == "0.68.3"
+        assert health.json()["version"] == "0.68.4"
         assert health.json()["database"]["status"] == "healthy"
 
         metrics = client.get("/api/metrics")

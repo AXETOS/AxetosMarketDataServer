@@ -96,7 +96,7 @@ class BridgeCandlesRequest(BaseModel):
     interval: str = Field(validation_alias=AliasChoices("Interval", "interval"), serialization_alias="Interval")
     candles: list[BridgeCandle] = Field(default_factory=list, validation_alias=AliasChoices("Candles", "candles"), serialization_alias="Candles")
     request_id: str | None = Field(default=None, validation_alias=AliasChoices("RequestId", "requestId"), serialization_alias="RequestId")
-    chunk_index: int = Field(default=0, validation_alias=AliasChoices("ChunkIndex", "chunkIndex"), serialization_alias="ChunkIndex")
+    chunk_index: int = Field(default=1, validation_alias=AliasChoices("ChunkIndex", "chunkIndex"), serialization_alias="ChunkIndex")
     chunk_count: int = Field(default=1, validation_alias=AliasChoices("ChunkCount", "chunkCount"), serialization_alias="ChunkCount")
     authoritative: bool = Field(default=False, validation_alias=AliasChoices("Authoritative", "authoritative"), serialization_alias="Authoritative")
     model_config = {"populate_by_name": True}

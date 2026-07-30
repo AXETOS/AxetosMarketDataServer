@@ -41,7 +41,7 @@ def test_returned_candle_time_is_translated_back_to_server_time() -> None:
 
 def test_bridge_reports_time_trade_server_before_copyrates() -> None:
     source = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text()
-    assert '#property version   "3.04"' in source
+    assert '#property version   "3.05"' in source
     assert 'action == "TIME"' in source
     assert "TimeTradeServer()" in source
     assert "ReportTerminalTime" in source

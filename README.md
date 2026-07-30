@@ -1,6 +1,10 @@
 # Axetos Market Data Server
 
-## Version 0.68.6
+## Version 0.68.7
+
+- Fixed MT5 candle chunk numbering: uploads now use the server protocol's one-based `chunkIndex` values.
+- Startup ten-minute authoritative refreshes no longer fail with HTTP 400 on their first chunk.
+- Added regression coverage for a single-chunk startup M1 upload.
 
 - Full-history backfill now creates an explicit ten-year source plan for every selected instrument: M1 month-by-month, H1 year-by-year, and D1 across the full ten-year window.
 - Per-instrument logs now distinguish planned, attempted, unavailable, received, stored, and skipped ranges for M1, H1, and D1.

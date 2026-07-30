@@ -1,5 +1,5 @@
 #property copyright "AxetosOS"
-#property version   "3.04"
+#property version   "3.05"
 #property strict
 #property description "Passive MT5 adapter controlled entirely by Axetos Market Data Server."
 
@@ -25,7 +25,7 @@ int OnInit()
    EventSetTimer(1);
    SendHeartbeat();
    RefreshTickSymbols();
-   PrintFormat("Axetos MT5 Bridge v3.04 started; provider=%s server=%s", InpProviderKey, InpServerUrl);
+   PrintFormat("Axetos MT5 Bridge v3.05 started; provider=%s server=%s", InpProviderKey, InpServerUrl);
    return INIT_SUCCEEDED;
 }
 
@@ -231,7 +231,7 @@ bool UploadCandles(string symbol, string interval, string request_id,
       string payload = StringFormat(
          "{\"providerKey\":\"%s\",\"terminalInstanceId\":\"%s\",\"providerSymbol\":\"%s\",\"canonicalInstrument\":\"%s\",\"interval\":\"%s\",\"requestId\":\"%s\",\"chunkIndex\":%d,\"chunkCount\":%d,\"candles\":[%s]}",
          JsonEscape(InpProviderKey), JsonEscape(g_terminal_id), JsonEscape(symbol), JsonEscape(symbol),
-         JsonEscape(interval), JsonEscape(request_id), chunk_index, chunk_count, items);
+         JsonEscape(interval), JsonEscape(request_id), chunk_index + 1, chunk_count, items);
       if(InpLogCommands && (chunk_index == 0 || chunk_index == chunk_count - 1))
          PrintFormat("Axetos MT5 Bridge: upload chunk %d/%d bars=%d request=%s",
                      chunk_index + 1, chunk_count, last - first, request_id);

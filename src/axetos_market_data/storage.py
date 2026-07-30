@@ -629,16 +629,33 @@ class MarketDataStore:
                      AND open_time_utc>=? AND open_time_utc<=?""",
                 params,
             )
+            # CopyRates can occasionally return a duplicate timestamp inside the same
+            # response, and older databases may contain an equivalent row that falls
+            # outside the textual delete bounds because it was written with a different
+            # timezone representation. The authoritative window must still complete
+            # atomically, so collapse duplicate primary keys and upsert the final MT5
+            # value instead of allowing a UNIQUE constraint failure to abort the batch.
+            deduplicated: dict[tuple[str, str, str, str], Candle] = {}
             for candle in values:
+                open_time = _iso(candle.open_time)
+                if candle.open_time < start or candle.open_time > end:
+                    raise ValueError(
+                        "Authoritative replacement candle is outside the requested window: "
+                        f"{open_time} not in {_iso(start)}..{_iso(end)}"
+                    )
+                deduplicated[(candle.provider, candle.instrument, candle.timeframe, open_time)] = candle
+            for key, candle in deduplicated.items():
                 connection.execute(
                     """INSERT INTO candles(provider,instrument,timeframe,open_time_utc,open,high,low,close,tick_count,volume,complete)
-                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                    (candle.provider, candle.instrument, candle.timeframe, _iso(candle.open_time),
-                     str(candle.open), str(candle.high), str(candle.low), str(candle.close),
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(provider,instrument,timeframe,open_time_utc) DO UPDATE SET
+                         open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,
+                         tick_count=excluded.tick_count,volume=excluded.volume,complete=excluded.complete""",
+                    (*key, str(candle.open), str(candle.high), str(candle.low), str(candle.close),
                      candle.tick_count, None if candle.volume is None else str(candle.volume),
                      int(candle.complete)),
                 )
-        return len(values)
+        return len(deduplicated)
 
     def insert_missing_or_replace_flatline(self, candles: Iterable[Candle]) -> int:
         """Insert missing rows and replace only flatline rows with better provider data.

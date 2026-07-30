@@ -1,15 +1,12 @@
 # Axetos Market Data Server
 
-## Version 0.68.8
+## Version 0.68.9
 
-- Fixed MT5 candle chunk numbering: uploads now use the server protocol's one-based `chunkIndex` values.
-- Startup ten-minute authoritative refreshes no longer fail with HTTP 400 on their first chunk.
-- Added regression coverage for a single-chunk startup M1 upload.
-
-- Full-history backfill now creates an explicit ten-year source plan for every selected instrument: M1 month-by-month, H1 year-by-year, and D1 across the full ten-year window.
-- Per-instrument logs now distinguish planned, attempted, unavailable, received, stored, and skipped ranges for M1, H1, and D1.
-- A provider returning no source bars for all three timeframes is reported as an instrument failure; candle repair is skipped and the server no longer claims that history was saved.
-- Updated all release-sensitive tests to the current version.
+- Fixed startup authoritative M1 replacement failures that returned HTTP 503 with `UNIQUE constraint failed: candles.provider, candles.instrument, candles.timeframe, candles.open_time_utc`.
+- Authoritative window replacement now validates that every returned candle belongs to the requested window, collapses duplicate MT5 timestamps deterministically, and uses an atomic conflict-safe upsert after clearing the exact window.
+- Existing rows and duplicate timestamps can no longer abort the ten-minute startup refresh.
+- Added regression coverage for duplicate timestamps and replacement of an already stored candle.
+- MT5 bridge remains v3.06 and continues to log the complete HTTP response body for failed uploads.
 
 ## Version 0.68.5
 

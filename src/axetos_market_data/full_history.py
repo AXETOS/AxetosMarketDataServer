@@ -57,6 +57,10 @@ class InstrumentProgress:
     bars_received: int = 0
     bars_inserted: int = 0
     batches_completed: int = 0
+    received_by_timeframe: dict[str, int] = field(default_factory=dict)
+    stored_by_timeframe: dict[str, int] = field(default_factory=dict)
+    skipped_by_timeframe: dict[str, int] = field(default_factory=dict)
+    ranges_by_timeframe: dict[str, int] = field(default_factory=dict)
     # Compatibility/status fields retained for clients and older tests.
     tier_index: int = 0
     tier_start: datetime | None = None
@@ -408,6 +412,11 @@ class FullHistoryBackfillManager:
             item.batches_completed += 1
             item.bars_received += received
             item.bars_inserted += inserted
+            timeframe = item.timeframe
+            item.received_by_timeframe[timeframe] = item.received_by_timeframe.get(timeframe, 0) + received
+            item.stored_by_timeframe[timeframe] = item.stored_by_timeframe.get(timeframe, 0) + inserted
+            item.skipped_by_timeframe[timeframe] = item.skipped_by_timeframe.get(timeframe, 0) + skipped
+            item.ranges_by_timeframe[timeframe] = item.ranges_by_timeframe.get(timeframe, 0) + 1
             item.last_result = f"download stored: received={received}, inserted={inserted}, skipped={skipped}"
             self._emit("backfill.download_progress", "Missing history range stored", provider_key, {
                 "job_id": job.job_id, "instrument": item.instrument, "timeframe": item.timeframe,
@@ -553,9 +562,29 @@ class FullHistoryBackfillManager:
                 "candles_skipped": max(0, item.bars_received - item.bars_inserted),
                 "planned_ranges": len(item.missing_ranges), "bad_ranges": len(item.bad_ranges),
             }
-            self._emit("backfill.download_completed", "Missing-history download completed", job.provider_key, {
-                "instrument": item.instrument, **details,
-            })
+            timeframe_summary = self._timeframe_summary(item)
+            summary_text = self._format_timeframe_summary(timeframe_summary)
+            self._emit(
+                "backfill.instrument_download_summary",
+                f"MT5 history received for {item.instrument}: {summary_text}",
+                job.provider_key,
+                {"instrument": item.instrument, "timeframes": timeframe_summary, **details},
+            )
+            empty_timeframes = [name for name in ("1m", "1h", "1d") if timeframe_summary[name]["received"] == 0]
+            if empty_timeframes:
+                self._emit(
+                    "backfill.instrument_history_incomplete",
+                    f"History missing for {item.instrument}: no bars returned for {', '.join(empty_timeframes)}",
+                    job.provider_key,
+                    {"instrument": item.instrument, "missing_timeframes": empty_timeframes,
+                     "timeframes": timeframe_summary, **details},
+                )
+            self._emit(
+                "backfill.download_completed",
+                f"Downloaded history saved for {item.instrument}; starting candle repair",
+                job.provider_key,
+                {"instrument": item.instrument, "timeframes": timeframe_summary, **details},
+            )
             if self._on_instrument_completed is not None:
                 item.phase = "verifying"
                 item.status = "verifying"
@@ -563,6 +592,28 @@ class FullHistoryBackfillManager:
             else:
                 item.phase = "completed"
                 item.status = "completed"
+
+
+    @staticmethod
+    def _timeframe_summary(item: InstrumentProgress) -> dict[str, dict[str, int]]:
+        return {
+            timeframe: {
+                "received": item.received_by_timeframe.get(timeframe, 0),
+                "stored": item.stored_by_timeframe.get(timeframe, 0),
+                "skipped": item.skipped_by_timeframe.get(timeframe, 0),
+                "ranges": item.ranges_by_timeframe.get(timeframe, 0),
+            }
+            for timeframe in ("1m", "1h", "1d")
+        }
+
+    @staticmethod
+    def _format_timeframe_summary(summary: dict[str, dict[str, int]]) -> str:
+        labels = (("1m", "M1"), ("1h", "H1"), ("1d", "D1"))
+        return "; ".join(
+            f"{label} received={summary[key]['received']:,}, stored={summary[key]['stored']:,}, "
+            f"skipped={summary[key]['skipped']:,}, ranges={summary[key]['ranges']:,}"
+            for key, label in labels
+        )
 
     @staticmethod
     def _simple_source_ranges(now: datetime) -> list[PlannedRange]:
@@ -825,6 +876,10 @@ class FullHistoryBackfillManager:
                 "ranges_skipped_existing": item.ranges_skipped_existing,
                 "ranges_unavailable": item.ranges_unavailable, "bars_available": item.bars_available,
                 "bars_received": item.bars_received, "bars_inserted": item.bars_inserted,
+                "received_by_timeframe": dict(item.received_by_timeframe),
+                "stored_by_timeframe": dict(item.stored_by_timeframe),
+                "skipped_by_timeframe": dict(item.skipped_by_timeframe),
+                "ranges_by_timeframe": dict(item.ranges_by_timeframe),
                 "error": item.error, "retry_count": item.retry_count,
                 "last_error_code": item.last_error_code, "request_kind": item.request_kind,
                 "request_id": item.current_request_id,

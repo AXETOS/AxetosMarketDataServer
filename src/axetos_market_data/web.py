@@ -425,12 +425,24 @@ def create_app(
                 for stage in repair_result.get("stages", []):
                     stage_details = dict(stage.get("details", {}))
                     category = str(stage.get("category", "repair.stage_completed"))
+                    if category.endswith("started"):
+                        continue
+                    instrument_name = str(stage.get("instrument", ""))
+                    source = str(stage_details.get("source_timeframe", ""))
+                    target = str(stage_details.get("target_timeframe", stage.get("timeframe", "")))
+                    message = (
+                        f"Candle repair for {instrument_name}: {source}→{target}, "
+                        f"source={int(stage_details.get('source_rows', 0)):,}, "
+                        f"candidates={int(stage_details.get('candidates', 0)):,}, "
+                        f"created={int(stage_details.get('created', 0)):,}, "
+                        f"overwritten={int(stage_details.get('overwritten', 0)):,}, "
+                        f"unchanged={int(stage_details.get('retained_same', 0)):,}, "
+                        f"errors={int(stage_details.get('errors', 0)):,}"
+                    )
                     events.record(
                         "warning" if int(stage_details.get("errors", 0)) else "info",
-                        category,
-                        "Candle repair stage started" if category.endswith("started") else "Candle repair stage completed",
-                        provider=provider, instrument=str(stage.get("instrument", "")),
-                        details={"target_timeframe": str(stage.get("timeframe", "")),
+                        category, message, provider=provider, instrument=instrument_name,
+                        details={"target_timeframe": target,
                                  "repair_worker_pid": repair_result.get("worker_pid"), **stage_details},
                     )
                 summary = dict(repair_result.get("summary", {}))

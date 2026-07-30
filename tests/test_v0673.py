@@ -57,6 +57,6 @@ def test_new_minute_replaces_ephemeral_state_without_persistence(tmp_path) -> No
 
 
 def test_v0673_metadata() -> None:
-    assert __version__ == "0.68.4"
-    assert 'version = "0.68.4"' in Path("pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.68.4" in Path("README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.68.5"
+    assert 'version = "0.68.5"' in Path("pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.68.5" in Path("README.md").read_text(encoding="utf-8")

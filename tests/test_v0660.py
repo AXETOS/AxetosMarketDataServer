@@ -18,7 +18,7 @@ def test_server_schedules_previous_two_completed_minutes() -> None:
 
 def test_bridge_is_thin_server_command_executor() -> None:
     bridge = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
-    assert '#property version   "3.02"' in bridge
+    assert '#property version   "3.04"' in bridge
     assert "PollCommand" in bridge
     assert "ExecuteCommand" in bridge
     assert "CopyRates" in bridge

@@ -7,7 +7,7 @@ from axetos_market_data.web import create_app
 
 
 def test_release_metadata() -> None:
-    assert __version__ == "0.68.1"
+    assert __version__ == "0.68.2"
 
 
 def test_provider_card_removes_manual_history_buttons(tmp_path: Path) -> None:

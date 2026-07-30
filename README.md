@@ -1,3 +1,11 @@
+# Axetos Market Data Server
+
+## Version 0.68.2
+
+- Corrected stale CI assertions that still expected MT5 bridge version 3.02 after the bridge had advanced to 3.04.
+- Restored the canonical README title required by the historical metadata-order regression test.
+- No runtime market-data behavior changed from v0.68.1.
+
 ## Version 0.68.1
 
 - Removed the provider-card **Restart**, **Download full MT5 history**, **Rebuild clean 7d**, **Repair gaps**, and **Repair last 24h (M1)** buttons.

@@ -29,9 +29,9 @@ def test_benchmark_result_can_be_written_as_json(tmp_path):
 
 
 def test_release_029_metadata_readme_and_status_wording():
-    assert __version__ == "0.68.10"
+    assert __version__ == "0.68.11"
     readme = open("README.md", encoding="utf-8").read()
     web = open("src/axetos_market_data/web.py", encoding="utf-8").read()
-    assert "## Version 0.68.10" in readme
+    assert "## Version 0.68.11" in readme
     assert "ingestion benchmark" in readme.lower()
     assert "Connected providers" in web

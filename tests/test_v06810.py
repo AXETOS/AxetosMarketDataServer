@@ -4,7 +4,7 @@ from axetos_market_data import __version__
 
 
 def test_release_metadata_and_bridge_display_version() -> None:
-    assert __version__ == "0.68.10"
+    assert __version__ == "0.68.11"
     bridge = Path("bridges/mt5/Experts/AxetosMarketDataBridge.mq5").read_text(encoding="utf-8")
     assert '#property version   "3.06"' in bridge
     assert "Axetos MT5 Bridge v3.06 started" in bridge

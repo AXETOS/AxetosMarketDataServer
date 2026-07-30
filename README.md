@@ -1,8 +1,11 @@
 # Axetos Market Data Server
 
-## Version 0.68.10
 
-Version 0.68.10 makes the automatic startup refresh intentionally M1-only. Each instrument now emits one compact operational entry with requested, received, stored, skipped, and result counts. The startup workflow atomically overwrites only the latest ten completed M1 candles and does not launch higher-timeframe candle repair or print irrelevant H1/D1 summaries. MT5 bridge v3.06 now displays the same v3.06 version in its startup Journal message as its source metadata.
+## Version 0.68.11
+
+Version 0.68.11 makes the automatic startup refresh intentionally M1-only. Each instrument now emits one compact operational entry with requested, received, stored, skipped, and result counts. The startup workflow atomically overwrites only the latest ten completed M1 candles and does not launch higher-timeframe candle repair or print irrelevant H1/D1 summaries. MT5 bridge v3.06 now displays the same v3.06 version in its startup Journal message as its source metadata.
+
+- Corrected the remaining stale bridge-version regression assertion to expect MT5 Bridge v3.06. Runtime behavior is unchanged from v0.68.10.
 
 ## Version 0.68.9
 

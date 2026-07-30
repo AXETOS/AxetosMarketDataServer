@@ -85,6 +85,6 @@ def test_authentication_tokens_must_be_distinct() -> None:
 
 def test_v037_release_metadata() -> None:
     root = Path(__file__).resolve().parents[1]
-    assert __version__ == "0.68.2"
-    assert 'version = "0.68.2"' in (root / "pyproject.toml").read_text(encoding="utf-8")
-    assert "## Version 0.68.2" in (root / "README.md").read_text(encoding="utf-8")
+    assert __version__ == "0.68.3"
+    assert 'version = "0.68.3"' in (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "## Version 0.68.3" in (root / "README.md").read_text(encoding="utf-8")

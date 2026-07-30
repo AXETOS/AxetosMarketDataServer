@@ -1,5 +1,11 @@
 # Axetos Market Data Server
 
+## Version 0.68.3
+
+- The **Manage symbols** view now keeps the complete MT5 discovery result in browser memory while the dialog remains open.
+- Saving one discovered symbol updates only that row and no longer collapses the view back to configured symbols.
+- The discovery snapshot is intentionally discarded when the dialog is closed; it is not persisted across restarts.
+
 ## Version 0.68.2
 
 - Corrected stale CI assertions that still expected MT5 bridge version 3.02 after the bridge had advanced to 3.04.
